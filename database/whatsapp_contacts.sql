@@ -12,14 +12,18 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_contacts (
 -- Enable RLS
 ALTER TABLE public.whatsapp_contacts ENABLE ROW LEVEL SECURITY;
 
+-- Idempotent: drop first so re-running this script never fails
+DROP POLICY IF EXISTS "Users can view their own contacts" ON public.whatsapp_contacts;
 CREATE POLICY "Users can view their own contacts"
 ON public.whatsapp_contacts FOR SELECT
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert their own contacts" ON public.whatsapp_contacts;
 CREATE POLICY "Users can insert their own contacts"
 ON public.whatsapp_contacts FOR INSERT
 WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can update their own contacts" ON public.whatsapp_contacts;
 CREATE POLICY "Users can update their own contacts"
 ON public.whatsapp_contacts FOR UPDATE
 USING (auth.uid() = user_id);

@@ -31,10 +31,16 @@ app.use(cors({
     credentials: true
 }));
 
-// Setup Socket.IO
+// Setup Socket.IO — use origin function so response gets Access-Control-Allow-Credentials: true
 const io = new Server(httpServer, {
     cors: {
-        origin: allowedOrigins,
+        origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean | string) => void) => {
+            if (!origin || allowedOrigins.includes(origin)) {
+                callback(null, origin || true);
+            } else {
+                callback(new Error('Not allowed by CORS'));
+            }
+        },
         methods: ['GET', 'POST'],
         credentials: true
     }
@@ -183,7 +189,7 @@ app.patch('/api/whatsapp/ai-toggle', requireAuth, async (req, res): Promise<any>
     return res.json({ success: true, ai_enabled: enabled });
 });
 
-// PATCH /api/whatsapp/auto-reply-config — configure automated basic replies
+// PATCH /api/whatsapp/auto-reply-config — configure automated basic replies (upsert so first save works)
 app.patch('/api/whatsapp/auto-reply-config', requireAuth, async (req, res): Promise<any> => {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
 
@@ -192,8 +198,10 @@ app.patch('/api/whatsapp/auto-reply-config', requireAuth, async (req, res): Prom
 
     const { error } = await supabaseAdmin
         .from('whatsapp_credentials')
-        .update({ auto_reply_enabled: enabled, auto_reply_text: text })
-        .eq('user_id', userId);
+        .upsert(
+            { user_id: userId, auto_reply_enabled: enabled, auto_reply_text: text ?? '', updated_at: new Date().toISOString() },
+            { onConflict: 'user_id' }
+        );
 
     if (error) return res.status(500).json({ error: error.message });
     return res.json({ success: true, auto_reply_enabled: enabled, auto_reply_text: text });
@@ -422,7 +430,7 @@ app.get('/api/whatsapp/messages/:leadPhone', requireAuth, async (req, res): Prom
     if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
 
     const userId = req.user.id;
-    const leadPhone = decodeURIComponent(req.params.leadPhone);
+    const leadPhone = decodeURIComponent(String(req.params.leadPhone ?? ''));
 
     const { data, error } = await supabaseAdmin
         .from('whatsapp_messages')
@@ -433,6 +441,12 @@ app.get('/api/whatsapp/messages/:leadPhone', requireAuth, async (req, res): Prom
 
     if (error) return res.status(500).json({ error: error.message });
     return res.json({ data });
+});
+
+// Ensure API always returns JSON on errors (e.g. 500)
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('Unhandled API error:', err);
+    if (!res.headersSent) res.status(500).json({ error: err?.message || 'Internal Server Error' });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -196,10 +196,16 @@ export const sendWhatsAppTextMessage = async (token: string, to: string, message
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
             body: JSON.stringify({ to, message, quotedMsgId })
         });
-        const data = await res.json();
-        return { success: res.ok, message: data.error || 'Sent', messageId: data.messageId };
+        let data: { error?: string; messageId?: string } = {};
+        try {
+            data = await res.json();
+        } catch {
+            data = { error: res.statusText || `Server error (${res.status})` };
+        }
+        const errMsg = data.error || (res.ok ? undefined : res.statusText || 'Send failed');
+        return { success: res.ok, message: errMsg, messageId: data.messageId };
     } catch (e: any) {
-        return { success: false, message: e.message };
+        return { success: false, message: e.message || 'Network error' };
     }
 };
 

@@ -1,4 +1,4 @@
-import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, WAMessage, downloadMediaMessage } from '@whiskeysockets/baileys';
+import makeWASocket, { DisconnectReason, fetchLatestBaileysVersion, WAMessage, downloadMediaMessage, jidNormalizedUser } from '@whiskeysockets/baileys';
 import type { Contact, Chat } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import { useSupabaseAuthState } from './supabaseAuthState';
@@ -253,7 +253,7 @@ export class WhatsAppConnectionManager {
                             is_group: true,
                             updated_at: new Date().toISOString(),
                         }, { onConflict: 'user_id,lead_phone' });
-                        this.io.to(userId).emit('whatsapp-chat-update', { lead_phone: leadPhone, contact_name: subject });
+                        this.io.to(userId).emit('whatsapp-chat-update', { lead_phone: String(leadPhone), contact_name: subject });
                     }
                 } catch (_) { /* ignore */ }
             }
@@ -408,9 +408,10 @@ export class WhatsAppConnectionManager {
                 is_group: isGroup,
             }).select().single() || { data: null };
 
+            const leadPhoneStr = String(leadPhone);
             const payload = {
                 id: savedMsg?.id,
-                lead_phone: leadPhone,
+                lead_phone: leadPhoneStr,
                 contact_name: contactName,
                 is_group: isGroup,
                 content,
@@ -423,6 +424,20 @@ export class WhatsAppConnectionManager {
             this.io.to(userId).emit('whatsapp-message', payload);
             this.io.to(userId).emit('new_whatsapp_message', payload);
 
+            // Persist contact name so Inbox shows name + number
+            if (contactName && leadPhone) {
+                try {
+                    await supabaseAdmin?.from('whatsapp_contacts').upsert({
+                        user_id: userId,
+                        lead_phone: leadPhoneStr,
+                        contact_name: contactName,
+                        is_group: isGroup,
+                        updated_at: new Date().toISOString(),
+                    }, { onConflict: 'user_id,lead_phone' });
+                    this.io.to(userId).emit('whatsapp-chat-update', { lead_phone: leadPhoneStr, contact_name: contactName });
+                } catch (_) { /* ignore if table missing */ }
+            }
+
             if (!isGroup && sock) {
                 const { data: credentials } = await supabaseAdmin
                     ?.from('whatsapp_credentials')
@@ -430,27 +445,37 @@ export class WhatsAppConnectionManager {
                     .eq('user_id', userId)
                     .maybeSingle() || { data: null };
 
-                const autoText = (credentials?.auto_reply_text || '').trim();
-                if (credentials?.auto_reply_enabled && autoText) {
+                const autoReplyEnabled = credentials?.auto_reply_enabled === true;
+                const autoText = (credentials?.auto_reply_text ?? '').trim();
+                if (autoReplyEnabled && autoText) {
                     try {
-                        const jid = leadPhone.includes('@') ? leadPhone : `${leadPhone}@s.whatsapp.net`;
-                        await sock.sendMessage(jid, { text: autoText });
-                        const { data: autoMsg } = await supabaseAdmin?.from('whatsapp_messages').insert({
-                            user_id: userId,
-                            lead_phone: leadPhone,
-                            content: autoText,
-                            sender: 'ai',
-                            status: 'sent',
-                            is_group: false,
-                        }).select().single() || { data: null };
-                        this.io.to(userId).emit('whatsapp-message', {
-                            id: autoMsg?.id,
-                            lead_phone: leadPhone,
-                            content: autoText,
-                            sender: 'ai',
-                            timestamp: new Date().toISOString(),
-                            status: 'sent',
-                        });
+                        // Use the exact JID we received from (handles LID and standard format)
+                        const jid = isGroup ? remoteJid : (jidNormalizedUser(remoteJid) || remoteJid);
+                        if (!jid) {
+                            console.warn('[WhatsAppConnectionManager] Auto-reply skipped: invalid JID for', leadPhoneStr);
+                        } else {
+                            console.log('[WhatsAppConnectionManager] Sending auto-reply to JID:', jid);
+                            const sendResult = await sock.sendMessage(jid, { text: autoText });
+                            const autoMessageId = sendResult?.key?.id;
+                            const { data: autoMsg } = await supabaseAdmin?.from('whatsapp_messages').insert({
+                                user_id: userId,
+                                lead_phone: leadPhoneStr,
+                                content: autoText,
+                                sender: 'ai',
+                                status: 'sent',
+                                is_group: false,
+                                message_id: autoMessageId || undefined,
+                            }).select().single() || { data: null };
+                            this.io.to(userId).emit('whatsapp-message', {
+                                id: autoMsg?.id,
+                                lead_phone: leadPhoneStr,
+                                content: autoText,
+                                sender: 'ai',
+                                message_id: autoMessageId,
+                                timestamp: new Date().toISOString(),
+                                status: 'sent',
+                            });
+                        }
                     } catch (err) {
                         console.error('[WhatsAppConnectionManager] Error sending auto-reply:', err);
                     }
@@ -477,18 +502,21 @@ export class WhatsAppConnectionManager {
         const sock = this.activeSockets.get(userId);
         if (!sock) return { success: false, error: 'WhatsApp not connected. Please reconnect from Automations.' };
 
-        // Convert exactly as requested
-        const jid = to.replace("+", "") + "@s.whatsapp.net";
+        const jid = this.resolveJid(to);
+        if (!jid) {
+            return { success: false, error: 'Invalid recipient (empty or invalid number).' };
+        }
 
         try {
+            console.log('[WhatsAppConnectionManager] Sending message to JID:', jid);
             const result = await sock.sendMessage(jid, { text: text });
-            console.log("Message sent:", result);
+            console.log('[WhatsAppConnectionManager] Message sent:', result?.key?.id);
             const messageId = result?.key?.id;
 
             // Save to DB and emit to frontend
             if (supabaseAdmin && messageId) {
                 try {
-                    const leadPhone = jidToLeadPhone(jid);
+                    const leadPhone = String(jidToLeadPhone(jid));
                     const { data: savedMsg, error: dbErr } = await supabaseAdmin.from('whatsapp_messages').insert({
                         user_id: userId,
                         lead_phone: leadPhone,
@@ -522,11 +550,16 @@ export class WhatsAppConnectionManager {
         }
     }
 
+    /** Build JID for sending; use Baileys jidNormalizedUser so WhatsApp accepts the message. */
     private resolveJid(to: string): string {
-        if (to.includes('@')) return to;
-        const numOnly = to.replace("+", "");
-        const isGroup = numOnly.length > 15 && /^\d+$/.test(numOnly);
-        return isGroup ? `${numOnly}@g.us` : `${numOnly}@s.whatsapp.net`;
+        if (!to || typeof to !== 'string') return '';
+        if (to.includes('@g.us')) return to;
+        if (to.includes('@')) return jidNormalizedUser(to) || to;
+        const digits = to.replace(/\D/g, '');
+        if (!digits) return '';
+        const isGroup = digits.length > 15;
+        const raw = isGroup ? `${digits}@g.us` : `${digits}@s.whatsapp.net`;
+        return isGroup ? raw : (jidNormalizedUser(raw) || raw);
     }
 
     // ── Send media ───────────────────────────────────────────────────────────
@@ -553,7 +586,7 @@ export class WhatsAppConnectionManager {
 
             if (supabaseAdmin) {
                 try {
-                    const leadPhone = jidToLeadPhone(jid);
+                    const leadPhone = String(jidToLeadPhone(jid));
                     const { data: savedMsg, error: dbErr } = await supabaseAdmin.from('whatsapp_messages').insert({
                         user_id: userId,
                         lead_phone: leadPhone,
@@ -600,7 +633,11 @@ export class WhatsAppConnectionManager {
 
             if (!credentials?.ai_enabled) return;
 
-            const jid = leadPhone.includes('@') ? leadPhone : `${leadPhone}@s.whatsapp.net`;
+            const jid = this.resolveJid(leadPhone);
+            if (!jid) {
+                console.warn('[WhatsAppConnectionManager] AI reply skipped: invalid JID for', leadPhone);
+                return;
+            }
 
             const { data: history } = await supabaseAdmin
                 ?.from('whatsapp_messages')
@@ -620,9 +657,10 @@ export class WhatsAppConnectionManager {
             const replyText = await generateAIReply(aiMessages as any);
             await sock.sendMessage(jid, { text: replyText });
 
+            const leadPhoneStr = String(leadPhone);
             const { data: aiMsg } = await supabaseAdmin?.from('whatsapp_messages').insert({
                 user_id: userId,
-                lead_phone: leadPhone,
+                lead_phone: leadPhoneStr,
                 content: replyText,
                 sender: 'ai',
                 status: 'sent',
@@ -631,7 +669,7 @@ export class WhatsAppConnectionManager {
 
             this.io.to(userId).emit('whatsapp-message', {
                 id: aiMsg?.id,
-                lead_phone: leadPhone,
+                lead_phone: leadPhoneStr,
                 content: replyText,
                 sender: 'ai',
                 timestamp: new Date().toISOString(),

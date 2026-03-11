@@ -32,11 +32,20 @@ const EMOJI_GROUPS = [
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const isGroupPhone = (phone: string) => phone?.includes('@g.us') || (phone?.length > 15 && /^\d+$/.test(phone || ''));
-// Format JID for display: 919876543210@s.whatsapp.net → +919876543210, groups → "Group" (use contact name when available)
+// Raw format for comparison: 919876543210@s.whatsapp.net → 919876543210, groups → full JID
 const formatPhone = (phone: string) => {
     if (!phone) return 'Unknown';
     const clean = phone.replace(/@.*/, '');
     if (isGroupPhone(phone)) return 'Group';
+    return `+${clean}`;
+};
+// Human-readable mobile number (e.g. +91 74909 61147) so it doesn't look like an ID
+const formatPhoneDisplay = (phone: string) => {
+    if (!phone) return 'Unknown';
+    const clean = (phone || '').replace(/@.*/, '').replace(/\D/g, '');
+    if (isGroupPhone(phone)) return 'Group';
+    if (clean.length === 12 && clean.startsWith('91')) return `+91 ${clean.slice(2, 7)} ${clean.slice(7)}`;
+    if (clean.length >= 10) return `+${clean.slice(0, clean.length - 10)} ${clean.slice(-10).replace(/(\d{5})(\d+)/, '$1 $2')}`.trim();
     return `+${clean}`;
 };
 const formatTime = (date: Date) => {
@@ -96,6 +105,7 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
     const [messages, setMessages] = useState<WaMessage[]>([]);
     const [conversations, setConversations] = useState<WaConversation[]>([]);
     const [isWaConnected, setIsWaConnected] = useState(false);
+    const [socketConnected, setSocketConnected] = useState(false);
     const [isLoadingStatus, setIsLoadingStatus] = useState(true);
     const [isLoadingConversations, setIsLoadingConversations] = useState(true);
     // UI state
@@ -116,21 +126,24 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
     const selectedPhoneRef = useRef<string>(selectedPhone);
     useEffect(() => { selectedPhoneRef.current = selectedPhone; }, [selectedPhone]);
 
-    // Resolve a display name — priority: DB contact_name > leads > formatted phone
+    // Resolve a display name — priority: DB contact_name > leads > formatted phone (human-readable, not raw id)
     const getContactName = useCallback((phone: string = '', contactNameFromDb?: string): string => {
-        if (contactNameFromDb) return contactNameFromDb;
+        const trimmed = (contactNameFromDb || '').trim();
+        if (trimmed) return trimmed;
         const safePhone = (phone || '').replace(/\D/g, '');
         const lead = leads.find(l => (l.phone || '').replace(/\D/g, '') === safePhone);
         if (lead?.name) return lead.name;
-        // Use the smart formatPhone helper which handles groups and normal numbers
-        return formatPhone(phone);
+        return formatPhoneDisplay(phone);
     }, [leads]);
 
     const getContactLead = (phone: string) => leads.find(l => l.phone?.replace(/\D/g, '') === phone);
 
-    // ── 1. Check WA connection status ─────────────────────────────────────────
+    // ── 1. Check WA connection status (initial + periodic so "WhatsApp offline" clears after connecting) ──
     useEffect(() => {
-        getWhatsAppCredentials(session.token).then(creds => setIsWaConnected(!!creds?.is_connected));
+        const check = () => getWhatsAppCredentials(session.token).then(creds => setIsWaConnected(!!creds?.is_connected));
+        check();
+        const interval = setInterval(check, 12000);
+        return () => clearInterval(interval);
     }, [session.token]);
 
     // ── 2. Load conversations from DB ─────────────────────────────────────────
@@ -205,16 +218,17 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                         name: bestName,
                         lastMessage: m.content,
                         lastTimestamp: new Date(m.timestamp),
-                        hasUnread: isFromLead && selectedPhoneRef.current !== m.lead_phone,
-                        unreadCount: isFromLead && selectedPhoneRef.current !== m.lead_phone
+                        hasUnread: isFromLead && String(selectedPhoneRef.current) !== String(m.lead_phone),
+                        unreadCount: isFromLead && String(selectedPhoneRef.current) !== String(m.lead_phone)
                             ? (idx >= 0 ? (prev[idx].unreadCount || 0) + 1 : 1) : 0,
                         isGroup: group,
+                        profilePictureUrl: idx >= 0 ? prev[idx].profilePictureUrl : undefined,
                     };
                     const copy = prev.filter(c => c.phone !== m.lead_phone);
                     return [updated, ...copy];
                 });
                 // Only add to the chat view if this message belongs to the open conversation
-                if (m.lead_phone === selectedPhoneRef.current) {
+                if (String(m.lead_phone) === String(selectedPhoneRef.current)) {
                     setMessages(prev => {
                         if (prev.find(msg => msg.id === m.id || (m.message_id && msg.message_id === m.message_id))) return prev;
                         return [...prev, {
@@ -238,8 +252,8 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
             onStatus: ({ messageId, status }) => {
                 setMessages(prev => prev.map(m => m.message_id === messageId ? { ...m, status } : m));
             },
-            onConnected: () => setIsWaConnected(true),
-            onDisconnected: () => setIsWaConnected(false),
+            onConnected: () => { setIsWaConnected(true); setSocketConnected(true); },
+            onDisconnected: () => { setIsWaConnected(false); setSocketConnected(false); },
             onHistorySynced: () => {
                 loadConversations();
                 if (selectedPhoneRef.current) {
@@ -262,6 +276,27 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
         });
         return cleanup;
     }, [session.user.id, getContactName, loadConversations]);
+
+    // ── 3b. Polling fallback when socket is disconnected (e.g. CORS) so messages still appear
+    useEffect(() => {
+        if (socketConnected) return;
+        const poll = () => {
+            loadConversations();
+            const phone = selectedPhoneRef.current;
+            if (phone && session.token) {
+                getWhatsAppMessageHistory(session.token, phone).then(data => {
+                    setMessages(data.map((m: any) => ({
+                        id: m.id, sender: m.sender, content: m.content,
+                        timestamp: new Date(m.timestamp), channel: 'WhatsApp' as Channel,
+                        message_id: m.message_id, status: m.status,
+                    })));
+                });
+            }
+        };
+        poll();
+        const interval = setInterval(poll, 10000);
+        return () => clearInterval(interval);
+    }, [socketConnected, session.token, loadConversations]);
 
     // ── 4. Supabase realtime (backup) ─────────────────────────────────────────
     useEffect(() => {
@@ -507,6 +542,9 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                                         </span>
                                         <span className="conv-time" style={{ color: conv.hasUnread && !isSelected ? '#00a884' : '#8696a0' }}>{formatTime(conv.lastTimestamp)}</span>
                                     </div>
+                                    {conv.name !== formatPhoneDisplay(conv.phone) && !conv.isGroup && (
+                                        <div style={{ fontSize: '11px', color: '#8696a0', marginTop: '1px' }}>{formatPhoneDisplay(conv.phone)}</div>
+                                    )}
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                         <span className="conv-last-msg">{formatMessagePreview(conv.lastMessage)}</span>
                                         {conv.unreadCount > 0 && !isSelected && (
@@ -536,6 +574,9 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                                     {selectedConversation.isGroup && <span style={{ fontSize: '11px', background: '#e9f5e0', color: '#2d7534', padding: '1px 5px', borderRadius: '4px', fontWeight: 500 }}>Group</span>}
                                     {selectedConversation.name}
                                 </div>
+                                {!selectedConversation.isGroup && (
+                                    <div style={{ color: '#667781', fontSize: '12px' }}>{formatPhoneDisplay(selectedConversation.phone)}</div>
+                                )}
                                 <div style={{ color: '#667781', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                                     {typingContact === selectedPhone
                                         ? <span style={{ color: '#00a884', fontStyle: 'italic' }}>typing...</span>
@@ -675,7 +716,7 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                                     <div style={{ textAlign: 'center' }}>
                                         <div style={{ fontWeight: 700, color: '#111b21', fontSize: '18px' }}>{selectedConversation.name}</div>
                                         <div style={{ color: '#8696a0', fontSize: '13px', marginTop: '2px' }}>
-                                            {selectedConversation.isGroup ? 'Group chat' : formatPhone(selectedConversation.phone)}
+                                            {selectedConversation.isGroup ? 'Group chat' : formatPhoneDisplay(selectedConversation.phone)}
                                         </div>
                                     </div>
                                 </div>

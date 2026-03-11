@@ -12,9 +12,23 @@ View your app in AI Studio: https://ai.studio/apps/drive/1qZwEWBA3u0dIvEAidJCo2x
 
 **Prerequisites:**  Node.js
 
-
-1. Install dependencies:
-   `npm install`
+1. Install dependencies: `npm install`
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+3. Run the app: `npm run dev`
+
+## Database (Supabase)
+
+- **WhatsApp (contacts, messages, RLS):** Run **[database/MIGRATE_WHATSAPP.sql](database/MIGRATE_WHATSAPP.sql)** in the Supabase SQL Editor. It is idempotent (safe to run more than once).
+- **WhatsApp Auto-Responder:** Run **[database/ADD_AUTO_REPLY.sql](database/ADD_AUTO_REPLY.sql)** to add `auto_reply_enabled` and `auto_reply_text` to `whatsapp_credentials`.
+
+If you see "policy already exists", run **MIGRATE_WHATSAPP.sql**; it drops policies before recreating them.
+
+**Checklist for Inbox and auto-reply:** (1) Run **ADD_AUTO_REPLY.sql** so auto-reply settings are stored. (2) Ensure the backend is reachable from the frontend (CORS and Socket.IO are configured so the Inbox socket can connect with credentials; frontend typically runs on port 3000 or 5173, backend on 3001).
+
+## Project setup (full flow)
+
+1. **Install and run:** `npm install`, set `GEMINI_API_KEY` in `.env.local`, then `npm run dev`.
+2. **Supabase:** In the Supabase SQL Editor, run **MIGRATE_WHATSAPP.sql**, then **ADD_AUTO_REPLY.sql** (see Database section above).
+3. **Connect WhatsApp:** In the app go to **Dashboard → Automations**. Under "WhatsApp Connection" click **Setup** and scan the QR code with WhatsApp on your phone. Wait until it shows **CONNECTED**.
+4. **Auto-respond when a client writes:** In **Automations**, open **Auto-Responder** (same section). Turn **Enable auto-reply** on and set the message (e.g. "Thank you! We'll reply shortly."). Click **Save**. When a lead sends a message, they will get this reply automatically. Optionally use **AI Agent Replier** instead for AI-generated replies.
+5. **Inbox:** Use **Dashboard → Inbox** to view and send messages. If you see "WhatsApp offline", ensure WhatsApp is connected in Automations and that the backend is running; status refreshes every few seconds.
