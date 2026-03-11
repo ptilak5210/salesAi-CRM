@@ -1,0 +1,228 @@
+import { io, Socket } from 'socket.io-client';
+import { WhatsAppCredential } from '../../utils/types';
+
+const API_BASE = 'http://localhost:3001';
+
+// Singleton socket instance
+let socket: Socket | null = null;
+
+// ── Socket for QR auth (ConnectWhatsAppModal) ─────────────────────────────────
+export const initWhatsAppSocket = (userId: string, callbacks: {
+    onQr: (qrCode: string) => void;
+    onConnected: () => void;
+    onDisconnected: () => void;
+    onError: (msg: string) => void;
+    onMessage: (msg: any) => void;
+}) => {
+    if (socket) socket.disconnect();
+
+    socket = io(API_BASE, { withCredentials: true });
+
+    socket.on('connect', () => {
+        console.log('[WhatsApp Socket] Connected to backend');
+        socket?.emit('start-whatsapp-auth', { userId });
+    });
+
+    socket.on('whatsapp-qr', (data: { qrCode: string }) => {
+        console.log('[WhatsApp Socket] Received QR Code');
+        callbacks.onQr(data.qrCode);
+    });
+
+    socket.on('whatsapp-connected', () => {
+        console.log('[WhatsApp Socket] Successfully connected Baileys session');
+        callbacks.onConnected();
+    });
+
+    socket.on('whatsapp-disconnected', () => {
+        console.log('[WhatsApp Socket] WhatsApp Disconnected');
+        callbacks.onDisconnected();
+    });
+
+    socket.on('whatsapp-error', (data: { message: string }) => {
+        console.error('[WhatsApp Socket] Error:', data.message);
+        callbacks.onError(data.message);
+    });
+
+    socket.on('whatsapp-message', (data: any) => {
+        console.log('[WhatsApp Socket] Received new message:', data);
+        callbacks.onMessage(data);
+    });
+
+    return () => {
+        if (socket) { socket.disconnect(); socket = null; }
+    };
+};
+
+// ── Socket for InboxView real-time (separate, non-QR) ────────────────────────
+let inboxSocket: Socket | null = null;
+
+export const initInboxSocket = (userId: string, callbacks: {
+    onMessage: (msg: any) => void;
+    onTyping: (data: { leadPhone: string; isTyping: boolean }) => void;
+    onStatus: (data: { messageId: string; leadPhone: string; status: string }) => void;
+    onConnected: () => void;
+    onDisconnected: () => void;
+    onHistorySynced?: () => void;
+    onChatUpdate?: (data: { lead_phone: string; contact_name?: string }) => void;
+}) => {
+    if (inboxSocket) inboxSocket.disconnect();
+
+    inboxSocket = io(API_BASE, { withCredentials: true });
+
+    inboxSocket.on('connect', () => {
+        console.log('[InboxSocket] Connected to backend');
+        inboxSocket?.emit('join-inbox', { userId });
+    });
+
+    inboxSocket.on('whatsapp-message', (data: any) => {
+        console.log('[InboxSocket] whatsapp-message received:', data?.content?.substring?.(0, 50));
+        callbacks.onMessage(data);
+    });
+
+    inboxSocket.on('new_whatsapp_message', (data: any) => {
+        console.log('[InboxSocket] new_whatsapp_message received (fallback):', data?.content?.substring?.(0, 50));
+        callbacks.onMessage(data);
+    });
+
+    inboxSocket.on('whatsapp-typing', (data: any) => {
+        callbacks.onTyping(data);
+    });
+
+    inboxSocket.on('whatsapp-status', (data: any) => {
+        callbacks.onStatus(data);
+    });
+
+    inboxSocket.on('whatsapp-connected', () => {
+        callbacks.onConnected();
+    });
+
+    inboxSocket.on('whatsapp-disconnected', () => {
+        callbacks.onDisconnected();
+    });
+
+    inboxSocket.on('whatsapp-history-synced', () => {
+        callbacks.onHistorySynced?.();
+    });
+
+    inboxSocket.on('whatsapp-chat-update', (data: { lead_phone: string; contact_name?: string }) => {
+        callbacks.onChatUpdate?.(data);
+    });
+
+    return () => {
+        if (inboxSocket) { inboxSocket.disconnect(); inboxSocket = null; }
+    };
+};
+
+
+
+// ── Debug: connection status (for troubleshooting) ────────────────────────────
+export const getWhatsAppDebugStatus = async (token: string): Promise<any> => {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp/debug`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        return res.ok ? res.json() : null;
+    } catch {
+        return null;
+    }
+};
+
+// ── Read credentials via backend (bypasses RLS) ───────────────────────────────
+export const getWhatsAppCredentials = async (token: string): Promise<WhatsAppCredential | null> => {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp/credentials`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!res.ok) return null;
+        const { data } = await res.json();
+        return data as WhatsAppCredential ?? null;
+    } catch (e: any) {
+        console.error('[WhatsAppService] Error fetching WhatsApp credentials:', e);
+        return null;
+    }
+};
+
+// ── Update auto-reply config (fixed message sent when client messages) ────────
+export const updateAutoReplyConfig = async (
+    token: string,
+    enabled: boolean,
+    text: string
+): Promise<{ success: boolean; error?: string }> => {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp/auto-reply-config`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ enabled, text })
+        });
+        const data = await res.json();
+        return { success: res.ok, error: data.error };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+};
+
+// ── Disconnect WhatsApp via backend ──────────────────────────────────────────
+export const disconnectWhatsApp = async (token: string): Promise<void> => {
+    const res = await fetch(`${API_BASE}/api/whatsapp/credentials/disconnect`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Failed to disconnect.');
+    if (socket) { socket.disconnect(); socket = null; }
+    if (inboxSocket) { inboxSocket.disconnect(); inboxSocket = null; }
+};
+
+// ── Read message history (always fresh from DB, ordered by timestamp) ─────────
+export const getWhatsAppMessageHistory = async (token: string, leadPhone: string): Promise<any[]> => {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp/messages/${encodeURIComponent(leadPhone)}`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!res.ok) return [];
+        const { data } = await res.json();
+        return data || [];
+    } catch (e) {
+        console.error('[WhatsAppService] Error fetching message history:', e);
+        return [];
+    }
+};
+
+// ── Send text message ─────────────────────────────────────────────────────────
+export const sendWhatsAppTextMessage = async (token: string, to: string, message: string, quotedMsgId?: string): Promise<{ success: boolean; message?: string; messageId?: string }> => {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ to, message, quotedMsgId })
+        });
+        const data = await res.json();
+        return { success: res.ok, message: data.error || 'Sent', messageId: data.messageId };
+    } catch (e: any) {
+        return { success: false, message: e.message };
+    }
+};
+
+// ── Send media (image / document / audio) ────────────────────────────────────
+export const sendWhatsAppMedia = async (token: string, to: string, file: File, caption?: string): Promise<{ success: boolean; error?: string }> => {
+    const formData = new FormData();
+    formData.append('to', to);
+    formData.append('file', file);
+    if (caption) formData.append('caption', caption);
+
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp/send-media`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            body: formData
+        });
+        const data = await res.json();
+        return { success: res.ok, error: data.error };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+};
+
+export const saveWhatsAppMessageToDB = async (_token: string, _phone: string, _content: string, _sender: string) => {
+    return { success: true };
+};
