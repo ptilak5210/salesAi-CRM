@@ -1,10 +1,17 @@
 import { io, Socket } from 'socket.io-client';
 import { WhatsAppCredential } from '../../utils/types';
+import { supabase } from '../lib/supabase';
 
 const API_BASE = 'http://localhost:3001';
 
 // Singleton socket instance
 let socket: Socket | null = null;
+
+// Helper to ALWAYS get the freshest token to avoid 401s from stale React state closures
+const getFreshToken = async (fallbackToken?: string) => {
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.access_token || fallbackToken || '';
+};
 
 // ── Socket for QR auth (ConnectWhatsAppModal) ─────────────────────────────────
 export const initWhatsAppSocket = (userId: string, callbacks: {
@@ -58,12 +65,12 @@ let inboxSocket: Socket | null = null;
 
 export const initInboxSocket = (userId: string, callbacks: {
     onMessage: (msg: any) => void;
-    onTyping: (data: { leadPhone: string; isTyping: boolean }) => void;
+    onTyping: (data: { leadPhone: string; jid?: string; isTyping: boolean }) => void;
     onStatus: (data: { messageId: string; leadPhone: string; status: string }) => void;
     onConnected: () => void;
     onDisconnected: () => void;
     onHistorySynced?: () => void;
-    onChatUpdate?: (data: { lead_phone: string; contact_name?: string }) => void;
+    onChatUpdate?: (data: { lead_phone: string; contact_name?: string; jid?: string; resolved_from_lid?: boolean }) => void;
 }) => {
     if (inboxSocket) inboxSocket.disconnect();
 
@@ -101,11 +108,11 @@ export const initInboxSocket = (userId: string, callbacks: {
     });
 
     inboxSocket.on('whatsapp-history-synced', () => {
-        callbacks.onHistorySynced?.();
+        if (callbacks.onHistorySynced) callbacks.onHistorySynced();
     });
 
-    inboxSocket.on('whatsapp-chat-update', (data: { lead_phone: string; contact_name?: string }) => {
-        callbacks.onChatUpdate?.(data);
+    inboxSocket.on('whatsapp-chat-update', (data: any) => {
+        if (callbacks.onChatUpdate) callbacks.onChatUpdate(data);
     });
 
     return () => {
@@ -113,13 +120,12 @@ export const initInboxSocket = (userId: string, callbacks: {
     };
 };
 
-
-
 // ── Debug: connection status (for troubleshooting) ────────────────────────────
 export const getWhatsAppDebugStatus = async (token: string): Promise<any> => {
     try {
+        const freshToken = await getFreshToken(token);
         const res = await fetch(`${API_BASE}/api/whatsapp/debug`, {
-            headers: { Authorization: `Bearer ${token}` }
+            headers: { Authorization: `Bearer ${freshToken}` }
         });
         return res.ok ? res.json() : null;
     } catch {
@@ -127,18 +133,35 @@ export const getWhatsAppDebugStatus = async (token: string): Promise<any> => {
     }
 };
 
-// ── Read credentials via backend (bypasses RLS) ───────────────────────────────
+// ── Read WA Connection status from DB ─────────────────────────────────────────
 export const getWhatsAppCredentials = async (token: string): Promise<WhatsAppCredential | null> => {
     try {
+        const freshToken = await getFreshToken(token);
         const res = await fetch(`${API_BASE}/api/whatsapp/credentials`, {
-            headers: { Authorization: `Bearer ${token}` }
+            headers: { Authorization: `Bearer ${freshToken}` }
         });
         if (!res.ok) return null;
-        const { data } = await res.json();
-        return data as WhatsAppCredential ?? null;
+        const json = await res.json();
+        return json.data || null;
     } catch (e: any) {
         console.error('[WhatsAppService] Error fetching WhatsApp credentials:', e);
         return null;
+    }
+};
+
+// ── AI Config ────────────────────────────────────────────────────────────────
+export const toggleAiReply = async (token: string, enabled: boolean): Promise<{ success: boolean; error?: string }> => {
+    try {
+        const freshToken = await getFreshToken(token);
+        const res = await fetch(`${API_BASE}/api/whatsapp/ai-toggle`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${freshToken}` },
+            body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        return { success: res.ok, error: data.error };
+    } catch (e: any) {
+        return { success: false, error: e.message };
     }
 };
 
@@ -149,9 +172,10 @@ export const updateAutoReplyConfig = async (
     text: string
 ): Promise<{ success: boolean; error?: string }> => {
     try {
+        const freshToken = await getFreshToken(token);
         const res = await fetch(`${API_BASE}/api/whatsapp/auto-reply-config`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${freshToken}` },
             body: JSON.stringify({ enabled, text })
         });
         const data = await res.json();
@@ -163,9 +187,10 @@ export const updateAutoReplyConfig = async (
 
 // ── Disconnect WhatsApp via backend ──────────────────────────────────────────
 export const disconnectWhatsApp = async (token: string): Promise<void> => {
+    const freshToken = await getFreshToken(token);
     const res = await fetch(`${API_BASE}/api/whatsapp/credentials/disconnect`, {
         method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${freshToken}` }
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Failed to disconnect.');
@@ -174,10 +199,15 @@ export const disconnectWhatsApp = async (token: string): Promise<void> => {
 };
 
 // ── Read message history (always fresh from DB, ordered by timestamp) ─────────
-export const getWhatsAppMessageHistory = async (token: string, leadPhone: string): Promise<any[]> => {
+export const getWhatsAppMessageHistory = async (token: string, leadPhone: string, cursor?: string): Promise<any[]> => {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp/messages/${encodeURIComponent(leadPhone)}`, {
-            headers: { Authorization: `Bearer ${token}` }
+        const freshToken = await getFreshToken(token);
+        let url = `${API_BASE}/api/whatsapp/messages/${encodeURIComponent(leadPhone)}`;
+        if (cursor) {
+            url += `?cursor=${encodeURIComponent(cursor)}`;
+        }
+        const res = await fetch(url, {
+            headers: { Authorization: `Bearer ${freshToken}` }
         });
         if (!res.ok) return [];
         const { data } = await res.json();
@@ -189,12 +219,13 @@ export const getWhatsAppMessageHistory = async (token: string, leadPhone: string
 };
 
 // ── Send text message ─────────────────────────────────────────────────────────
-export const sendWhatsAppTextMessage = async (token: string, to: string, message: string, quotedMsgId?: string): Promise<{ success: boolean; message?: string; messageId?: string }> => {
+export const sendWhatsAppTextMessage = async (token: string, to: string, message: string, quotedMsgId?: string, contactName?: string): Promise<{ success: boolean; message?: string; messageId?: string }> => {
     try {
+        const freshToken = await getFreshToken(token);
         const res = await fetch(`${API_BASE}/api/whatsapp/send`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ to, message, quotedMsgId })
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${freshToken}` },
+            body: JSON.stringify({ to, message, quotedMsgId, contact_name: contactName })
         });
         let data: { error?: string; messageId?: string } = {};
         try {
@@ -210,16 +241,18 @@ export const sendWhatsAppTextMessage = async (token: string, to: string, message
 };
 
 // ── Send media (image / document / audio) ────────────────────────────────────
-export const sendWhatsAppMedia = async (token: string, to: string, file: File, caption?: string): Promise<{ success: boolean; error?: string }> => {
+export const sendWhatsAppMedia = async (token: string, to: string, file: File, caption?: string, contactName?: string): Promise<{ success: boolean; error?: string }> => {
     const formData = new FormData();
     formData.append('to', to);
     formData.append('file', file);
     if (caption) formData.append('caption', caption);
+    if (contactName) formData.append('contact_name', contactName);
 
     try {
+        const freshToken = await getFreshToken(token);
         const res = await fetch(`${API_BASE}/api/whatsapp/send-media`, {
             method: 'POST',
-            headers: { Authorization: `Bearer ${token}` },
+            headers: { Authorization: `Bearer ${freshToken}` },
             body: formData
         });
         const data = await res.json();

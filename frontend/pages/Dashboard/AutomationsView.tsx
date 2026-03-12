@@ -279,21 +279,35 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
                     <div className="bg-white rounded-2xl shadow-xl max-w-md w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-lg font-bold text-slate-900">Auto-Responder settings</h3>
-                            <button type="button" onClick={() => !autoReplySaving && setAutoReplyModalOpen(false)} className="p-1 rounded-lg hover:bg-slate-100">
+                            <button type="button" onClick={() => !autoReplySaving && setAutoReplyModalOpen(false)} className="p-1 rounded-lg hover:bg-slate-100" aria-label="Close">
                                 <X className="w-5 h-5 text-slate-500" />
                             </button>
                         </div>
                         <p className="text-sm text-slate-500 mb-4">Send a fixed message when a lead sends their first message.</p>
                         <div className="flex items-center gap-3 mb-4">
-                            <button
-                                type="button"
-                                role="switch"
-                                aria-checked={autoReplyEnabled}
-                                onClick={() => setAutoReplyEnabled(!autoReplyEnabled)}
-                                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${autoReplyEnabled ? 'bg-green-500' : 'bg-slate-200'}`}
-                            >
-                                <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${autoReplyEnabled ? 'translate-x-5' : 'translate-x-1'}`} />
-                            </button>
+                            {autoReplyEnabled ? (
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked="true"
+                                    aria-label="Toggle auto-reply"
+                                    onClick={() => setAutoReplyEnabled(false)}
+                                    className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 bg-green-500"
+                                >
+                                    <span className="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out translate-x-5" />
+                                </button>
+                            ) : (
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked="false"
+                                    aria-label="Toggle auto-reply"
+                                    onClick={() => setAutoReplyEnabled(true)}
+                                    className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 bg-slate-200"
+                                >
+                                    <span className="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out translate-x-1" />
+                                </button>
+                            )}
                             <span className="text-sm font-medium text-slate-700">Enable auto-reply</span>
                         </div>
                         <label className="block text-sm font-medium text-slate-700 mb-2">Message</label>

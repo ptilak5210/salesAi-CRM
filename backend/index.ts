@@ -212,12 +212,12 @@ app.post('/api/whatsapp/send', requireAuth, async (req, res): Promise<any> => {
     console.log("==> Hit /api/whatsapp/send");
     try {
         const userId = req.user.id;
-        const { to, message, quotedMsgId } = req.body;
+        const { to, message, quotedMsgId, contact_name } = req.body;
         console.log(`Sending message to ${to} from ${userId}...`);
 
         if (!to || !message) return res.status(400).json({ error: 'Missing `to` or `message`.' });
 
-        const result = await waManager.sendMessage(userId, to, message, quotedMsgId);
+        const result = await waManager.sendMessage(userId, to, message, quotedMsgId, contact_name);
         console.log("waManager.sendMessage result:", result);
 
         if (!result.success) {
@@ -236,12 +236,12 @@ app.post('/api/whatsapp/send', requireAuth, async (req, res): Promise<any> => {
 // POST /api/whatsapp/send-media — send an image or document
 app.post('/api/whatsapp/send-media', requireAuth, upload.single('file'), async (req, res): Promise<any> => {
     const userId = req.user.id;
-    const { to, caption } = req.body;
+    const { to, caption, contact_name } = req.body;
     const file = (req as any).file;
 
     if (!to || !file) return res.status(400).json({ error: 'Missing `to` or file.' });
 
-    const result = await waManager.sendMedia(userId, to, file.buffer, file.mimetype, caption, file.originalname);
+    const result = await waManager.sendMedia(userId, to, file.buffer, file.mimetype, caption, file.originalname, contact_name);
     if (!result.success) return res.status(500).json({ error: result.error });
 
     // Message saved to DB and emitted via Socket by connection.ts
@@ -393,28 +393,47 @@ app.get('/api/whatsapp/chats', requireAuth, async (req, res): Promise<any> => {
 
     const { data: messages, error: msgError } = await supabaseAdmin
         .from('whatsapp_messages')
-        .select('lead_phone, content, timestamp, sender, contact_name, is_group')
+        .select('lead_phone, jid, content, timestamp, sender, contact_name, is_group')
         .eq('user_id', userId)
-        .order('timestamp', { ascending: false });
+        .order('timestamp', { ascending: false })
+        .limit(1000);
 
     if (msgError) return res.status(500).json({ error: msgError.message });
 
     const { data: contacts } = await supabaseAdmin
         ?.from('whatsapp_contacts')
-        .select('lead_phone, contact_name, profile_picture_url, is_group')
+        .select('lead_phone, jid, contact_name, profile_picture_url, is_group')
         .eq('user_id', userId) || { data: [] };
 
     const contactMap = new Map((contacts || []).map((c: any) => [c.lead_phone, c]));
 
     const seen = new Set<string>();
+    
+    // First pass to discover the best non-empty / non-phone contact_name for each JID
+    const bestNameMap = new Map<string, string>();
+    for (const m of messages || []) {
+        const rowJid = m.jid || m.lead_phone;
+        const currentBest = bestNameMap.get(rowJid);
+        if (!currentBest || currentBest === m.lead_phone || currentBest === m.jid) {
+            if (m.contact_name && m.contact_name !== m.lead_phone && m.contact_name !== m.jid) {
+                bestNameMap.set(rowJid, m.contact_name);
+            }
+        }
+    }
+
     const chats: any[] = [];
     for (const m of messages || []) {
-        if (seen.has(m.lead_phone)) continue;
-        seen.add(m.lead_phone);
+        const rowJid = m.jid || m.lead_phone;
+        if (seen.has(rowJid)) continue;
+        seen.add(rowJid);
         const meta = contactMap.get(m.lead_phone);
+        
+        let finalContactName = meta?.contact_name || bestNameMap.get(rowJid) || m.contact_name;
+        
         chats.push({
+            jid: rowJid,
             lead_phone: m.lead_phone,
-            contact_name: meta?.contact_name || m.contact_name,
+            contact_name: finalContactName,
             profile_picture_url: meta?.profile_picture_url,
             is_group: m.is_group ?? meta?.is_group ?? false,
             last_message: m.content,
@@ -425,22 +444,41 @@ app.get('/api/whatsapp/chats', requireAuth, async (req, res): Promise<any> => {
     return res.json({ data: chats });
 });
 
+// Normalize JID function
+function normalizeJid(jid: string) {
+    if (!jid.includes('@')) {
+        return jid + '@lid';
+    }
+    return jid;
+}
+
 // 3. Fetch Message History (latest messages from DB, ordered by timestamp)
-app.get('/api/whatsapp/messages/:leadPhone', requireAuth, async (req, res): Promise<any> => {
+app.get('/api/whatsapp/messages/:jid', requireAuth, async (req, res): Promise<any> => {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
 
     const userId = req.user.id;
-    const leadPhone = decodeURIComponent(String(req.params.leadPhone ?? ''));
+    const jidParam = decodeURIComponent(String(req.params.jid ?? ''));
+    const jid = normalizeJid(jidParam);
+    const cursor = req.query.cursor ? String(req.query.cursor) : null;
+    const limitParams = req.query.limit ? parseInt(String(req.query.limit)) : 20;
+    const limit = isNaN(limitParams) ? 20 : limitParams;
 
-    const { data, error } = await supabaseAdmin
+    let query = supabaseAdmin
         .from('whatsapp_messages')
         .select('*')
         .eq('user_id', userId)
-        .eq('lead_phone', leadPhone)
-        .order('timestamp', { ascending: true });
+        .eq('jid', jid);
+
+    if (cursor) {
+        query = query.lt('timestamp', cursor);
+    }
+
+    const { data, error } = await query
+        .order('timestamp', { ascending: false })
+        .limit(limit);
 
     if (error) return res.status(500).json({ error: error.message });
-    return res.json({ data });
+    return res.json({ data: data.reverse() });
 });
 
 // Ensure API always returns JSON on errors (e.g. 500)

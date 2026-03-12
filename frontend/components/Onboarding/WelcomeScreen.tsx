@@ -15,20 +15,26 @@ export const WelcomeScreen = ({ onContinue, userName }: WelcomeScreenProps) => {
 
     return (
         <div className="fixed inset-0 z-[60] bg-white flex flex-col items-center overflow-hidden animate-fade-in">
+            {/* Dynamic Confetti Styles */}
+            <style dangerouslySetInnerHTML={{
+                __html: [...Array(20)].map((_, i) => `
+                    .confetti-${i} {
+                        --size: ${Math.random() * 8 + 4}px;
+                        --left: ${Math.random() * 100}%;
+                        --top: ${Math.random() * 100}%;
+                        --delay: ${Math.random() * 2}s;
+                        --opacity: ${Math.random()};
+                    }
+                `).join('\n')
+            }} />
+
             {/* Gradient Header with Confetti Effect */}
             <div className="w-full h-48 bg-gradient-to-r from-blue-400 via-indigo-500 to-purple-600 relative overflow-hidden">
                 <div className="absolute inset-0 opacity-30">
                     {[...Array(20)].map((_, i) => (
                         <div
                             key={i}
-                            className="absolute bg-white rounded-full animate-pulse confetti-particle"
-                            style={{
-                                '--size': Math.random() * 8 + 4 + 'px',
-                                '--left': Math.random() * 100 + '%',
-                                '--top': Math.random() * 100 + '%',
-                                '--delay': Math.random() * 2 + 's',
-                                '--opacity': Math.random()
-                            } as React.CSSProperties}
+                            className={`absolute bg-white rounded-full animate-pulse confetti-particle confetti-${i}`}
                         />
                     ))}
                 </div>

@@ -12,51 +12,66 @@ import { generateAIReply } from '../services/aiService';
 const logger = pino({ level: 'silent' }) as any;
 
 // ── JID to phone mapping: 919876543210@s.whatsapp.net → 919876543210, 120363xxx@g.us → keep full JID ──
-export function jidToLeadPhone(jid: string): string {
-    if (!jid) return '';
-    if (jid.includes('@g.us')) return jid; // Groups: use full JID as key
-    const match = jid.match(/^(\d+)@/);
-    return match ? match[1] : jid.replace(/@.*/, '');
+export function jidToLeadPhone(jid: string): string | null {
+    if (!jid) return null;
+    // If it's a group JID, it doesn't have a lead_phone
+    if (jid.includes('@g.us')) return null;
+    // If it's a Linked Identity (LID), no true phone number yet
+    if (jid.includes('@lid')) return null;
+    
+    // Extract the part before @ for normal phone numbers
+    const phone = jid.split('@')[0];
+    return phone;
 }
 
 // Extract text/content from WAMessage for storage (sync - for history)
 function extractMessageContentSync(msg: WAMessage): string {
     const m = msg.message;
     if (!m) return '[Unsupported Message Type]';
-    return m.conversation ||
-        m.extendedTextMessage?.text ||
-        (m.documentMessage ? `[File: ${m.documentMessage.fileName || 'document'}]` : null) ||
-        (m.audioMessage ? '[Audio]' : null) ||
-        (m.videoMessage ? '[Video]' : null) ||
-        (m.stickerMessage ? '[Sticker]' : null) ||
-        (m.locationMessage ? `[Location: ${m.locationMessage.name || 'Shared Location'}]` : null) ||
-        (m.liveLocationMessage ? '[Live Location]' : null) ||
-        (m.contactMessage ? `[Contact: ${m.contactMessage.displayName}]` : null) ||
-        (m.contactsArrayMessage ? `[${m.contactsArrayMessage.contacts?.length} Contacts]` : null) ||
-        (m.pollCreationMessage ? `[Poll: ${m.pollCreationMessage.name}]` : null) ||
-        (m.pollUpdateMessage ? '[Poll Vote]' : null) ||
-        '[Unsupported Message Type]';
+    const text = m.conversation || m.extendedTextMessage?.text;
+    if (text) return text;
+    
+    if (m.documentMessage) return `[File: ${m.documentMessage.fileName || 'document'}]`;
+    if (m.audioMessage) return '[Audio]';
+    if (m.videoMessage) return '[Video]';
+    if (m.stickerMessage) return '[Sticker]';
+    if (m.locationMessage) return `[Location: ${m.locationMessage.name || 'Shared Location'}]`;
+    if (m.liveLocationMessage) return '[Live Location]';
+    if (m.contactMessage) return `[Contact: ${m.contactMessage.displayName}]`;
+    if (m.contactsArrayMessage) return `[${m.contactsArrayMessage.contacts?.length} Contacts]`;
+    if (m.pollCreationMessage) return `[Poll: ${m.pollCreationMessage.name}]`;
+    if (m.pollUpdateMessage) return '[Poll Vote]';
+    return '[Unsupported Message Type]';
 }
 
 export class WhatsAppConnectionManager {
     private io: Server;
     public activeSockets: Map<string, any> = new Map();
     private retryCount: Map<string, number> = new Map();
+    private connectingUsers: Set<string> = new Set();
 
     constructor(io: Server) {
         this.io = io;
     }
 
     public async connectToWhatsApp(userId: string, webSocketId?: string) {
-        console.log(`[WhatsAppConnectionManager] Connecting for user: ${userId}`);
-
-        const currentRetries = this.retryCount.get(userId) || 0;
-        if (currentRetries > 3) {
-            console.error(`[WhatsAppConnectionManager] Too many retries for user ${userId}. Stopping.`);
-            if (webSocketId) this.io.to(webSocketId).emit('whatsapp-error', { message: 'Too many connection attempts. Please refresh and try again.' });
-            this.retryCount.set(userId, 0);
+        if (this.connectingUsers.has(userId)) {
+            console.log(`[WhatsAppConnectionManager] Connection already in progress for user ${userId}. Skipping.`);
             return;
         }
+
+        console.log(`[WhatsAppConnectionManager] Connecting for user: ${userId}`);
+        this.connectingUsers.add(userId);
+
+        try {
+            const currentRetries = this.retryCount.get(userId) || 0;
+            if (currentRetries > 3) {
+                console.error(`[WhatsAppConnectionManager] Too many retries for user ${userId}. Stopping.`);
+                if (webSocketId) this.io.to(webSocketId).emit('whatsapp-error', { message: 'Too many connection attempts. Please refresh and try again.' });
+                this.retryCount.set(userId, 0);
+                this.connectingUsers.delete(userId);
+                return;
+            }
 
         const existingSock = this.activeSockets.get(userId);
         if (existingSock) {
@@ -84,12 +99,12 @@ export class WhatsAppConnectionManager {
             auth: state,
             generateHighQualityLinkPreview: true,
             browser: ['Windows', 'Chrome', '120.0.6099.129'],
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 30000,
-            keepAliveIntervalMs: 15000,
-            retryRequestDelayMs: 2000,
+            connectTimeoutMs: 90000,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 30000,
+            retryRequestDelayMs: 5000,
             qrTimeout: 60000,
-            syncFullHistory: true, // Enable full WhatsApp history sync
+            syncFullHistory: false, // Disable full WhatsApp history sync to save resources
         });
 
         this.activeSockets.set(userId, sock);
@@ -113,31 +128,47 @@ export class WhatsAppConnectionManager {
                 const errorCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
                 const shouldReconnect = errorCode !== DisconnectReason.loggedOut;
                 console.error(`[WhatsAppConnectionManager] Connection closed for user ${userId}. Reason: ${errorCode}. Reconnecting: ${shouldReconnect}`);
+                this.connectingUsers.delete(userId);
 
-                if (errorCode === DisconnectReason.loggedOut || errorCode === 428) {
-                    console.warn(`[WhatsAppConnectionManager] Session invalidated (Error ${errorCode}) for user ${userId}. Clearing state...`);
-                    this.retryCount.set(userId, currentRetries + 1);
+                if (errorCode === DisconnectReason.loggedOut) {
+                    console.warn(`[WhatsAppConnectionManager] Session logged out for user ${userId}. Clearing state...`);
                     await clearAll();
-                    setTimeout(() => this.connectToWhatsApp(userId, webSocketId), 5000);
+                    this.retryCount.set(userId, 0);
+                    if (supabaseAdmin) {
+                        await supabaseAdmin.from('whatsapp_credentials').update({ is_connected: false }).eq('user_id', userId);
+                    }
+                    if (webSocketId) this.io.to(webSocketId).emit('whatsapp-error', { message: 'WhatsApp logged out. Please reconnect.' });
+                    return;
+                }
+
+                if (errorCode === 428 || errorCode === DisconnectReason.connectionLost || errorCode === DisconnectReason.restartRequired) {
+                    console.log(`[WhatsAppConnectionManager] Temporary disconnection (Reason ${errorCode}) for user ${userId}. Retrying...`);
+                    setTimeout(() => this.connectToWhatsApp(userId, webSocketId), 3000);
                     return;
                 }
 
                 if (!shouldReconnect) {
+                    console.warn(`[WhatsAppConnectionManager] Permanent disconnection (Reason ${errorCode}) for user ${userId}.`);
                     this.activeSockets.delete(userId);
                     await clearAll();
                     this.retryCount.set(userId, 0);
-                    await supabaseAdmin?.from('whatsapp_credentials').update({ is_connected: false }).eq('user_id', userId);
+                    if (supabaseAdmin) {
+                        await supabaseAdmin.from('whatsapp_credentials').update({ is_connected: false }).eq('user_id', userId);
+                    }
                     if (webSocketId) this.io.to(webSocketId).emit('whatsapp-disconnected');
                 } else {
                     setTimeout(() => this.connectToWhatsApp(userId, webSocketId), 3000);
                 }
             } else if (connection === 'open') {
+                this.connectingUsers.delete(userId);
                 this.retryCount.set(userId, 0);
                 console.log(`[WhatsAppConnectionManager] Connection opened for user ${userId}`);
-                await supabaseAdmin?.from('whatsapp_credentials').upsert(
-                    { user_id: userId, is_connected: true, updated_at: new Date().toISOString() },
-                    { onConflict: 'user_id' }
-                );
+                if (supabaseAdmin) {
+                    await supabaseAdmin.from('whatsapp_credentials').upsert(
+                        { user_id: userId, is_connected: true, updated_at: new Date().toISOString() },
+                        { onConflict: 'user_id' }
+                    );
+                }
                 if (supabaseAdmin) {
                     try {
                         await supabaseAdmin.from('whatsapp_messages').delete().eq('user_id', userId);
@@ -163,8 +194,7 @@ export class WhatsAppConnectionManager {
             for (const c of contacts) {
                 const jid = c.id || c.phoneNumber;
                 if (jid) {
-                    const leadPhone = jidToLeadPhone(jid);
-                    contactMap.set(leadPhone, { name: c.notify || c.name, imgUrl: c.imgUrl || undefined });
+                    contactMap.set(String(jid), { name: c.notify || c.name, imgUrl: c.imgUrl || undefined });
                 }
             }
 
@@ -174,17 +204,20 @@ export class WhatsAppConnectionManager {
                 if (!jid) continue;
                 const leadPhone = jidToLeadPhone(jid);
                 const isGroup = jid.includes('@g.us');
-                const name = chat.name || contactMap.get(leadPhone)?.name;
-                if (name) contactMap.set(leadPhone, { ...contactMap.get(leadPhone), name });
+                const name = chat.name || contactMap.get(jid)?.name;
+                if (name) contactMap.set(jid, { ...contactMap.get(jid), name });
                 try {
-                    await supabaseAdmin?.from('whatsapp_contacts').upsert({
-                        user_id: userId,
-                        lead_phone: leadPhone,
-                        contact_name: name || null,
-                        profile_picture_url: contactMap.get(leadPhone)?.imgUrl || null,
-                        is_group: isGroup,
-                        updated_at: new Date().toISOString(),
-                    }, { onConflict: 'user_id,lead_phone' });
+                    if (supabaseAdmin) {
+                        await supabaseAdmin.from('whatsapp_contacts').upsert({
+                            user_id: userId,
+                            lead_phone: leadPhone,
+                            jid: jid,
+                            contact_name: name || null,
+                            profile_picture_url: contactMap.get(jid)?.imgUrl || null,
+                            is_group: isGroup,
+                            updated_at: new Date().toISOString(),
+                        }, { onConflict: 'user_id,jid' });
+                    }
                 } catch (_) { /* ignore if table missing */ }
             }
 
@@ -200,9 +233,9 @@ export class WhatsAppConnectionManager {
                 const sender = fromMe ? (msg.key.participant ? 'lead' : 'user') : 'lead';
                 const actualSender = fromMe ? 'user' : 'lead';
 
-                let contactName = msg.pushName || contactMap.get(leadPhone)?.name || '';
+                let contactName = msg.pushName || contactMap.get(remoteJid)?.name || '';
                 if (isGroup && msg.key.participant) {
-                    contactName = msg.pushName || contactMap.get(jidToLeadPhone(msg.key.participant))?.name || contactName;
+                    contactName = msg.pushName || contactMap.get(msg.key.participant)?.name || contactName;
                 }
 
                 const msgId = msg.key.id;
@@ -214,17 +247,20 @@ export class WhatsAppConnectionManager {
                 const timestamp = new Date(ts * 1000).toISOString();
 
                 try {
-                    await supabaseAdmin?.from('whatsapp_messages').insert({
-                        user_id: userId,
-                        lead_phone: leadPhone,
-                        content,
-                        sender: actualSender,
-                        message_id: msgId,
-                        timestamp,
-                        status: fromMe ? 'sent' : 'received',
-                        contact_name: contactName || null,
-                        is_group: isGroup,
-                    });
+                    if (supabaseAdmin) {
+                        await supabaseAdmin.from('whatsapp_messages').insert({
+                            user_id: userId,
+                            lead_phone: leadPhone,
+                            jid: remoteJid,
+                            content,
+                            sender: actualSender,
+                            message_id: msgId,
+                            timestamp,
+                            status: fromMe ? 'sent' : 'received',
+                            contact_name: contactName || null,
+                            is_group: isGroup,
+                        });
+                    }
                 } catch (e: any) {
                     if (e?.code === '23505') { /* duplicate - ignore */ }
                     else console.warn('[WhatsAppConnectionManager] History insert error:', e);
@@ -249,11 +285,12 @@ export class WhatsAppConnectionManager {
                         await supabaseAdmin.from('whatsapp_contacts').upsert({
                             user_id: userId,
                             lead_phone: leadPhone,
+                            jid: jid,
                             contact_name: subject || null,
                             is_group: true,
                             updated_at: new Date().toISOString(),
-                        }, { onConflict: 'user_id,lead_phone' });
-                        this.io.to(userId).emit('whatsapp-chat-update', { lead_phone: String(leadPhone), contact_name: subject });
+                        }, { onConflict: 'user_id,jid' });
+                        this.io.to(userId).emit('whatsapp-chat-update', { lead_phone: String(leadPhone), contact_name: subject, jid });
                     }
                 } catch (_) { /* ignore */ }
             }
@@ -270,13 +307,68 @@ export class WhatsAppConnectionManager {
                         await supabaseAdmin.from('whatsapp_contacts').upsert({
                             user_id: userId,
                             lead_phone: leadPhone,
+                            jid: jid,
                             contact_name: c.notify || c.name || null,
                             profile_picture_url: c.imgUrl || null,
                             is_group: false,
                             updated_at: new Date().toISOString(),
-                        }, { onConflict: 'user_id,lead_phone' });
+                        }, { onConflict: 'user_id,jid' });
                     }
                 } catch (_) { /* ignore */ }
+            }
+        });
+
+        // ── 3.5 LID to PID mapping (for contacts with Linked Identities) ──────
+        sock.ev.on('contacts.update', async (updates: any[]) => {
+            for (const update of updates) {
+                const jid = update.id;
+                if (!jid || jid.includes('@g.us')) continue;
+
+                // If we get a phone number for this JID, update it in our contacts
+                const hasRealPhone = update.phoneNumber || (update.id.includes('@s.whatsapp.net') && !update.id.startsWith('1'));
+                
+                if (hasRealPhone && supabaseAdmin) {
+                    try {
+                        const realPhone = update.phoneNumber || jidToLeadPhone(update.id);
+                        const jidToUpdate = update.id;
+
+                        // Check if the real phone number already exists in our contacts
+                        const { data: existingContact } = await supabaseAdmin
+                            .from('whatsapp_contacts')
+                            .select('lead_phone')
+                            .eq('user_id', userId)
+                            .eq('lead_phone', realPhone)
+                            .maybeSingle();
+
+                        if (existingContact) {
+                            // If it exists, we just delete the old LID record to avoid duplicate key errors
+                            // The messages will simply be mapped to the existing realPhone
+                            await supabaseAdmin.from('whatsapp_contacts').delete()
+                                .eq('user_id', userId)
+                                .eq('jid', jidToUpdate)
+                                .neq('lead_phone', realPhone); // Don't delete if somehow it's already updated
+                        } else {
+                            // Safe to update the existing contact's lead_phone
+                            await supabaseAdmin.from('whatsapp_contacts').update({
+                                lead_phone: realPhone,
+                                updated_at: new Date().toISOString(),
+                            }).eq('user_id', userId).eq('jid', jidToUpdate);
+                        }
+                        
+                        // Cascade update to messages
+                        await supabaseAdmin.from('whatsapp_messages').update({
+                            lead_phone: realPhone,
+                        }).eq('user_id', userId).eq('jid', jidToUpdate);
+                        
+                        this.io.to(userId).emit('whatsapp-chat-update', { 
+                            lead_phone: realPhone, 
+                            jid: jidToUpdate,
+                            resolved_from_lid: true
+                        });
+                    } catch (err) {
+                        console.warn('[WhatsAppConnectionManager] Error resolving LID to Phone in contacts.update:', err);
+                    }
+                }
             }
         });
 
@@ -307,10 +399,12 @@ export class WhatsAppConnectionManager {
                 const statusStr = statusMap[statusNum] ?? 'sent';
 
                 try {
-                    await supabaseAdmin?.from('whatsapp_messages')
-                        .update({ status: statusStr })
-                        .eq('user_id', userId)
-                        .eq('message_id', msgId);
+                    if (supabaseAdmin) {
+                        await supabaseAdmin.from('whatsapp_messages')
+                            .update({ status: statusStr })
+                            .eq('user_id', userId)
+                            .eq('message_id', msgId);
+                    }
                 } catch (_) { /* ignore */ }
 
                 this.io.to(userId).emit('whatsapp-status', { messageId: msgId, leadPhone, status: statusStr });
@@ -325,10 +419,14 @@ export class WhatsAppConnectionManager {
             const presences = presenceData.presences || {};
             const firstPresence = Object.values(presences)[0] as any;
             const isTyping = firstPresence?.lastKnownPresence === 'composing';
-            this.io.to(userId).emit('whatsapp-typing', { leadPhone, isTyping });
+            this.io.to(userId).emit('whatsapp-typing', { leadPhone, jid, isTyping });
         });
 
         return sock;
+        } catch (err) {
+            console.error('[WhatsAppConnectionManager] Error in connectToWhatsApp:', err);
+            this.connectingUsers.delete(userId);
+        }
     }
 
     private async handleIncomingMessage(userId: string, msg: WAMessage) {
@@ -348,17 +446,105 @@ export class WhatsAppConnectionManager {
         }
 
         const isGroup = remoteJid.includes('@g.us');
-        const leadPhone = jidToLeadPhone(remoteJid);
+        let leadPhone = jidToLeadPhone(remoteJid);
 
         const sock = this.activeSockets.get(userId);
+
+        // Attempt to resolve LID to a real phone number if it looks like a LID
+        if (!isGroup && remoteJid.includes('@lid') && sock) {
+            try {
+                // Check if we already have a mapping in our contacts
+                let existingContact = null;
+                if (supabaseAdmin) {
+                    const { data } = await supabaseAdmin.from('whatsapp_contacts')
+                        .select('lead_phone')
+                        .eq('user_id', userId)
+                        .eq('jid', remoteJid)
+                        .not('lead_phone', 'is', null) // Ensure it's not null
+                        .order('updated_at', { ascending: false })
+                        .limit(1).maybeSingle();
+                    existingContact = data;
+                }
+
+                if (existingContact?.lead_phone) {
+                    leadPhone = existingContact.lead_phone;
+                } else {
+                    // Try to resolve via Baileys
+                    const [result] = await sock.onWhatsApp(remoteJid).catch(() => []);
+                    
+                    // The result from onWhatsApp can return the real JID format for a LID
+                    if (result && result.exists && result.jid && !result.jid.includes('@lid')) {
+                        const newPhone = jidToLeadPhone(result.jid);
+                        console.log(`[WhatsAppConnectionManager] Resolved LID ${remoteJid} to phone ${newPhone}`);
+                        
+                        // Trigger a background update for this contact across all tables
+                        const performResolution = async () => {
+                            try {
+                                if (supabaseAdmin) {
+                                    // Check if the real phone number already exists
+                                    const { data: contactWithRealPhone } = await supabaseAdmin
+                                        .from('whatsapp_contacts')
+                                        .select('lead_phone')
+                                        .eq('user_id', userId)
+                                        .eq('lead_phone', newPhone)
+                                        .maybeSingle();
+
+                                    if (contactWithRealPhone) {
+                                        // Merge/Delete: avoid duplicate key by removing the LID record
+                                        await supabaseAdmin.from('whatsapp_contacts').delete()
+                                            .eq('user_id', userId)
+                                            .eq('jid', remoteJid)
+                                            .neq('lead_phone', newPhone);
+                                    } else {
+                                        // Safe update
+                                        await supabaseAdmin.from('whatsapp_contacts').update({
+                                            lead_phone: newPhone,
+                                            updated_at: new Date().toISOString(),
+                                        }).eq('user_id', userId).eq('jid', remoteJid);
+                                    }
+
+                                    // Update messages
+                                    await supabaseAdmin.from('whatsapp_messages').update({
+                                        lead_phone: newPhone,
+                                    }).eq('user_id', userId).eq('jid', remoteJid);
+                                }
+                            } catch (err) {
+                                console.warn('[WhatsAppConnectionManager] Background LID update failed:', err);
+                            }
+                        };
+                        performResolution();
+                        
+                        leadPhone = newPhone;
+                        this.io.to(userId).emit('whatsapp-chat-update', { 
+                            lead_phone: newPhone, 
+                            jid: remoteJid,
+                            resolved_from_lid: true
+                        });
+                    }
+                }
+            } catch (err) {
+                console.warn('[WhatsAppConnectionManager] LID resolution failed:', err);
+            }
+        }
         let contactName = msg.pushName || '';
 
         if (!contactName) {
             try {
-                const { data: existing } = await supabaseAdmin?.from('whatsapp_messages')
-                    .select('contact_name').eq('user_id', userId).eq('lead_phone', leadPhone)
-                    .not('contact_name', 'is', null).limit(1).maybeSingle() || { data: null };
-                if (existing?.contact_name) contactName = existing.contact_name;
+                if (supabaseAdmin) {
+                    // 1. Try whatsapp_contacts
+                    const { data: contactMeta } = await supabaseAdmin.from('whatsapp_contacts')
+                        .select('contact_name').eq('user_id', userId).eq('jid', remoteJid).maybeSingle();
+                    
+                    if (contactMeta?.contact_name) {
+                        contactName = contactMeta.contact_name;
+                    } else {
+                        // 2. Fallback to whatsapp_messages
+                        const { data: existing } = await supabaseAdmin.from('whatsapp_messages')
+                            .select('contact_name').eq('user_id', userId).eq('lead_phone', leadPhone)
+                            .not('contact_name', 'is', null).limit(1).maybeSingle();
+                        if (existing?.contact_name) contactName = existing.contact_name;
+                    }
+                }
             } catch (_) { }
         }
 
@@ -370,19 +556,56 @@ export class WhatsAppConnectionManager {
         }
 
         let content: string;
-        if (msg.message.imageMessage) {
+        if (msg.message.imageMessage || msg.message.videoMessage || msg.message.documentMessage || msg.message.audioMessage) {
             try {
-                if (sock) {
+                if (sock && supabaseAdmin) {
+                    const messageType = msg.message.imageMessage ? 'imageMessage' :
+                        msg.message.videoMessage ? 'videoMessage' :
+                        msg.message.documentMessage ? 'documentMessage' :
+                        'audioMessage';
+
                     const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-                    const base64 = (buffer as Buffer).toString('base64');
-                    const mime = msg.message.imageMessage.mimetype || 'image/jpeg';
-                    content = `[IMAGE:data:${mime};base64,${base64}]`;
+                    
+                    const mime = msg.message[messageType]?.mimetype || 'application/octet-stream';
+                    // Extract extension based on mime type
+                    const extMap: Record<string, string> = {
+                        'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 
+                        'video/mp4': 'mp4', 'audio/ogg; codecs=opus': 'ogg', 'audio/mpeg': 'mp3',
+                        'application/pdf': 'pdf'
+                    };
+                    const ext = extMap[mime] || mime.split('/')[1] || 'bin';
+                    const fileName = `${userId}/${remoteJid.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.${ext}`;
+
+                    // Upload buffer to Supabase Storage
+                    const { data: uploadData, error: uploadError } = await supabaseAdmin
+                        .storage
+                        .from('whatsapp-media')
+                        .upload(fileName, buffer, {
+                            contentType: mime,
+                            upsert: true
+                        });
+
+                    if (uploadError) {
+                        console.error('[WhatsAppConnectionManager] Storage upload failed:', uploadError);
+                        content = msg.message.imageMessage ? '[Image]' : msg.message.videoMessage ? '[Video]' : msg.message.audioMessage ? '[Audio]' : '[Document]';
+                    } else {
+                        // Generate public URL
+                        const { data: { publicUrl } } = supabaseAdmin
+                            .storage
+                            .from('whatsapp-media')
+                            .getPublicUrl(fileName);
+
+                        if (msg.message.imageMessage) content = `[IMAGE:${publicUrl}]`;
+                        else if (msg.message.videoMessage) content = `[VIDEO:${publicUrl}]`;
+                        else if (msg.message.audioMessage) content = `[AUDIO:${publicUrl}]`;
+                        else content = `[FILE:${publicUrl}]`;
+                    }
                 } else {
-                    content = '[Image]';
+                    content = msg.message.imageMessage ? '[Image]' : msg.message.videoMessage ? '[Video]' : msg.message.audioMessage ? '[Audio]' : '[Document]';
                 }
             } catch (err) {
-                console.error('[WhatsAppConnectionManager] Error downloading image:', err);
-                content = '[Image]';
+                console.error('[WhatsAppConnectionManager] Error downloading media:', err);
+                content = msg.message.imageMessage ? '[Image]' : msg.message.videoMessage ? '[Video]' : msg.message.audioMessage ? '[Audio]' : '[Document]';
             }
         } else {
             content = extractMessageContentSync(msg);
@@ -397,9 +620,13 @@ export class WhatsAppConnectionManager {
         }
 
         try {
+            const extractPhone = (jid: string) => (jid || '').split('@')[0];
+            const leadPhoneStr = extractPhone(remoteJid) || String(leadPhone);
+
             const { data: savedMsg } = await supabaseAdmin.from('whatsapp_messages').insert({
                 user_id: userId,
-                lead_phone: leadPhone,
+                lead_phone: leadPhoneStr,
+                jid: remoteJid,
                 content,
                 sender: 'lead',
                 message_id: finalMsgId,
@@ -408,10 +635,36 @@ export class WhatsAppConnectionManager {
                 is_group: isGroup,
             }).select().single() || { data: null };
 
-            const leadPhoneStr = String(leadPhone);
+            // Auto-create lead if missing
+            if (!isGroup && leadPhoneStr) {
+                try {
+                    const { data: existingLead } = await supabaseAdmin
+                        .from('leads')
+                        .select('id')
+                        .or(`phone.eq.${leadPhoneStr},whatsapp.eq.${leadPhoneStr}`)
+                        .eq('user_id', userId)
+                        .maybeSingle();
+                        
+                    if (!existingLead) {
+                        await supabaseAdmin.from('leads').insert({
+                            user_id: userId,
+                            name: contactName || leadPhoneStr,
+                            phone: leadPhoneStr,
+                            whatsapp: leadPhoneStr,
+                            source: 'whatsapp',
+                            display_name: contactName || leadPhoneStr,
+                            status: 'New'
+                        });
+                        console.log(`[WhatsAppConnectionManager] Auto-created new lead for ${leadPhoneStr}`);
+                    }
+                } catch (e) {
+                    console.error('[WhatsAppConnectionManager] Failed trying to auto-create lead:', e);
+                }
+            }
             const payload = {
                 id: savedMsg?.id,
                 lead_phone: leadPhoneStr,
+                jid: remoteJid,
                 contact_name: contactName,
                 is_group: isGroup,
                 content,
@@ -427,23 +680,83 @@ export class WhatsAppConnectionManager {
             // Persist contact name so Inbox shows name + number
             if (contactName && leadPhone) {
                 try {
-                    await supabaseAdmin?.from('whatsapp_contacts').upsert({
-                        user_id: userId,
-                        lead_phone: leadPhoneStr,
-                        contact_name: contactName,
-                        is_group: isGroup,
-                        updated_at: new Date().toISOString(),
-                    }, { onConflict: 'user_id,lead_phone' });
-                    this.io.to(userId).emit('whatsapp-chat-update', { lead_phone: leadPhoneStr, contact_name: contactName });
+                    if (supabaseAdmin) {
+                        await supabaseAdmin.from('whatsapp_contacts').upsert({
+                            user_id: userId,
+                            lead_phone: leadPhoneStr,
+                            jid: remoteJid,
+                            contact_name: contactName,
+                            is_group: isGroup,
+                            updated_at: new Date().toISOString(),
+                        }, { onConflict: 'user_id,jid' });
+                    }
+                    this.io.to(userId).emit('whatsapp-chat-update', { lead_phone: leadPhoneStr, contact_name: contactName, jid: remoteJid });
                 } catch (_) { /* ignore if table missing */ }
             }
 
+            // --- HARDCODED "I AM INTERESTED" AUTOMATION ---
+            if (!isGroup && content.trim().toLowerCase() === 'i am interested') {
+                console.log(`[WhatsAppConnectionManager] "I am interested" matched for ${remoteJid}`);
+                try {
+                    // Create standard lead if not already caught (ignoring errors if exists)
+                    if (supabaseAdmin) {
+                        await supabaseAdmin.from('leads').insert({
+                            user_id: userId,
+                            name: contactName || leadPhoneStr,
+                            phone: leadPhoneStr,
+                            whatsapp: leadPhoneStr,
+                            source: 'whatsapp',
+                            display_name: contactName || leadPhoneStr,
+                            status: 'New'
+                        });
+                    }
+                    
+                    if (sock) {
+                        const replyContent = "Thank you for your interest! Our team will contact you shortly.";
+                        const sendResult = await sock.sendMessage(remoteJid, { text: replyContent });
+                        
+                        if (supabaseAdmin) {
+                            const { data: autoMsg } = await supabaseAdmin.from('whatsapp_messages').insert({
+                                user_id: userId,
+                                lead_phone: leadPhoneStr,
+                                jid: remoteJid,
+                                content: replyContent,
+                                sender: 'ai',
+                                status: 'sent',
+                                is_group: false,
+                                message_id: sendResult?.key?.id || undefined,
+                                contact_name: contactName
+                            }).select().single();
+                            
+                            this.io.to(userId).emit('whatsapp-message', {
+                                id: autoMsg?.id,
+                                lead_phone: leadPhoneStr,
+                                jid: remoteJid,
+                                content: replyContent,
+                                sender: 'ai',
+                                message_id: sendResult?.key?.id,
+                                timestamp: new Date().toISOString(),
+                                status: 'sent',
+                            });
+                        }
+                    }
+                    return; // Early return to avoid duplicate generic auto-replies
+                } catch (e) {
+                    console.error('[WhatsAppConnectionManager] Auto-reply error:', e);
+                }
+            }
+            // ---------------------------------------------
+
             if (!isGroup && sock) {
-                const { data: credentials } = await supabaseAdmin
-                    ?.from('whatsapp_credentials')
-                    .select('ai_enabled, auto_reply_enabled, auto_reply_text')
-                    .eq('user_id', userId)
-                    .maybeSingle() || { data: null };
+                let credentials = null;
+                if (supabaseAdmin) {
+                    const { data } = await supabaseAdmin
+                        .from('whatsapp_credentials')
+                        .select('ai_enabled, auto_reply_enabled, auto_reply_text')
+                        .eq('user_id', userId)
+                        .maybeSingle();
+                    credentials = data;
+                }
 
                 const autoReplyEnabled = credentials?.auto_reply_enabled === true;
                 const autoText = (credentials?.auto_reply_text ?? '').trim();
@@ -457,18 +770,24 @@ export class WhatsAppConnectionManager {
                             console.log('[WhatsAppConnectionManager] Sending auto-reply to JID:', jid);
                             const sendResult = await sock.sendMessage(jid, { text: autoText });
                             const autoMessageId = sendResult?.key?.id;
-                            const { data: autoMsg } = await supabaseAdmin?.from('whatsapp_messages').insert({
-                                user_id: userId,
-                                lead_phone: leadPhoneStr,
-                                content: autoText,
-                                sender: 'ai',
-                                status: 'sent',
-                                is_group: false,
-                                message_id: autoMessageId || undefined,
-                            }).select().single() || { data: null };
+                            let autoMsg = null;
+                            if (supabaseAdmin) {
+                                const { data } = await supabaseAdmin.from('whatsapp_messages').insert({
+                                    user_id: userId,
+                                    lead_phone: leadPhoneStr,
+                                    jid: jid,
+                                    content: autoText,
+                                    sender: 'ai',
+                                    status: 'sent',
+                                    is_group: false,
+                                    message_id: autoMessageId || undefined,
+                                }).select().single();
+                                autoMsg = data;
+                            }
                             this.io.to(userId).emit('whatsapp-message', {
                                 id: autoMsg?.id,
                                 lead_phone: leadPhoneStr,
+                                jid: jid,
                                 content: autoText,
                                 sender: 'ai',
                                 message_id: autoMessageId,
@@ -480,7 +799,7 @@ export class WhatsAppConnectionManager {
                         console.error('[WhatsAppConnectionManager] Error sending auto-reply:', err);
                     }
                 } else if (credentials?.ai_enabled) {
-                    await this.triggerAiReply(userId, leadPhone, content);
+                    await this.triggerAiReply(userId, remoteJid, content);
                 }
             }
         } catch (e) {
@@ -498,11 +817,23 @@ export class WhatsAppConnectionManager {
     }
 
     // ── Send text message ─────────────────────────────────────────────────────
-    public async sendMessage(userId: string, to: string, text: string, quotedMsgId?: string): Promise<{ success: boolean; error?: string; messageId?: string }> {
+    public async sendMessage(userId: string, to: string, text: string, quotedMsgId?: string, contactNameFromBody?: string): Promise<{ success: boolean; error?: string; messageId?: string }> {
         const sock = this.activeSockets.get(userId);
         if (!sock) return { success: false, error: 'WhatsApp not connected. Please reconnect from Automations.' };
 
-        const jid = this.resolveJid(to);
+        let jid = '';
+        if (supabaseAdmin) {
+            const { data } = await supabaseAdmin
+                .from('whatsapp_contacts')
+                .select('jid')
+                .eq('user_id', userId)
+                .eq('lead_phone', to)
+                .maybeSingle();
+            if (data?.jid) jid = data.jid;
+        }
+
+        if (!jid) jid = this.resolveJid(to);
+        
         if (!jid) {
             return { success: false, error: 'Invalid recipient (empty or invalid number).' };
         }
@@ -516,15 +847,29 @@ export class WhatsAppConnectionManager {
             // Save to DB and emit to frontend
             if (supabaseAdmin && messageId) {
                 try {
-                    const leadPhone = String(jidToLeadPhone(jid));
+                    const extractPhone = (j: string) => (j || '').split('@')[0];
+                    const leadPhone = extractPhone(jid);
+                    
+                    // Fetch contact name for payload enrichment
+                    let contactName = null;
+                    const { data: contactData } = await supabaseAdmin
+                        .from('whatsapp_contacts')
+                        .select('contact_name')
+                        .or(`jid.eq.${jid},lead_phone.eq.${leadPhone}`)
+                        .eq('user_id', userId)
+                        .maybeSingle();
+                    contactName = contactData?.contact_name || contactNameFromBody || leadPhone;
+
                     const { data: savedMsg, error: dbErr } = await supabaseAdmin.from('whatsapp_messages').insert({
                         user_id: userId,
                         lead_phone: leadPhone,
+                        jid: jid,
                         content: text,
                         sender: 'user',
                         message_id: messageId,
                         status: 'sent',
                         is_group: jid.includes('@g.us'),
+                        contact_name: contactName
                     }).select().maybeSingle();
 
                     if (dbErr) console.warn("[DB Insert Error for Send]", dbErr);
@@ -532,11 +877,13 @@ export class WhatsAppConnectionManager {
                     this.io.to(userId).emit('whatsapp-message', {
                         id: savedMsg?.id || `temp-${messageId}`,
                         lead_phone: leadPhone,
+                        jid: jid,
                         content: text,
                         sender: 'user',
                         message_id: messageId,
                         timestamp: new Date().toISOString(),
                         status: 'sent',
+                        contact_name: contactName
                     });
                 } catch (dbEx) {
                     console.error("[DB Exception for Send]", dbEx);
@@ -563,11 +910,22 @@ export class WhatsAppConnectionManager {
     }
 
     // ── Send media ───────────────────────────────────────────────────────────
-    public async sendMedia(userId: string, to: string, buffer: Buffer, mimetype: string, caption?: string, filename?: string): Promise<{ success: boolean; error?: string; messageId?: string }> {
+    public async sendMedia(userId: string, to: string, buffer: Buffer, mimetype: string, caption?: string, filename?: string, contactNameFromBody?: string): Promise<{ success: boolean; error?: string; messageId?: string }> {
         const sock = this.activeSockets.get(userId);
         if (!sock) return { success: false, error: 'WhatsApp not connected.' };
 
-        const jid = this.resolveJid(to);
+        let jid = '';
+        if (supabaseAdmin) {
+            const { data } = await supabaseAdmin
+                .from('whatsapp_contacts')
+                .select('jid')
+                .eq('user_id', userId)
+                .eq('lead_phone', to)
+                .maybeSingle();
+            if (data?.jid) jid = data.jid;
+        }
+
+        if (!jid) jid = this.resolveJid(to);
         let msgContent: any;
 
         if (mimetype.startsWith('image/')) {
@@ -581,20 +939,79 @@ export class WhatsAppConnectionManager {
         try {
             const sent = await sock.sendMessage(jid, msgContent);
             const messageId = sent?.key?.id;
-            const label = mimetype.startsWith('image/') ? '[Image]' : mimetype.startsWith('audio/') ? '[Audio]' : `[File: ${filename || 'document'}]`;
-            const content = caption ? `${label} — ${caption}` : label;
+            
+            let content = '';
+            let uploadError: any = null;
 
             if (supabaseAdmin) {
                 try {
-                    const leadPhone = String(jidToLeadPhone(jid));
+                    const extMap: Record<string, string> = {
+                        'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+                        'video/mp4': 'mp4', 'audio/ogg; codecs=opus': 'ogg', 'audio/mpeg': 'mp3',
+                        'application/pdf': 'pdf'
+                    };
+                    const ext = extMap[mimetype] || mimetype.split('/')[1] || 'bin';
+                    const sObjectName = `${userId}/${jid.replace(/[^a-zA-Z0-9]/g, '_')}_outgoing_${Date.now()}.${ext}`;
+
+                    // Upload buffer to Supabase
+                    const { error } = await supabaseAdmin.storage
+                        .from('whatsapp-media')
+                        .upload(sObjectName, buffer, { contentType: mimetype, upsert: true });
+
+                    uploadError = error;
+
+                    if (!uploadError) {
+                        const { data: { publicUrl } } = supabaseAdmin.storage.from('whatsapp-media').getPublicUrl(sObjectName);
+                        if (mimetype.startsWith('image/')) content = `[IMAGE:${publicUrl}] ${caption || ''}`.trim();
+                        else if (mimetype.startsWith('audio/')) content = `[AUDIO:${publicUrl}] ${caption || ''}`.trim();
+                        else if (mimetype.startsWith('video/')) content = `[VIDEO:${publicUrl}] ${caption || ''}`.trim();
+                        else content = `[FILE:${publicUrl}] ${caption || ''}`.trim();
+                    }
+                } catch (err) {
+                    uploadError = err;
+                }
+            }
+
+            // Fallback if uploading failed or supabaseAdmin missing
+            if (uploadError || !content) {
+                if (uploadError) console.error('[WhatsAppConnectionManager] Outgoing media upload failed:', uploadError);
+                if (mimetype.startsWith('image/')) {
+                    const base64 = buffer.toString('base64');
+                    content = buffer.length < 500 * 1024 ? `[IMAGE:data:${mimetype};base64,${base64}]` : '[Image]';
+                } else if (mimetype.startsWith('video/')) {
+                    const base64 = buffer.toString('base64');
+                    content = buffer.length < 500 * 1024 ? `[VIDEO:data:${mimetype};base64,${base64}]` : '[Video]';
+                } else {
+                    const label = mimetype.startsWith('audio/') ? '[Audio]' : `[File: ${filename || 'document'}]`;
+                    content = caption ? `${label} — ${caption}` : label;
+                }
+            }
+
+            if (supabaseAdmin) {
+                try {
+                    const extractPhone = (j: string) => (j || '').split('@')[0];
+                    const leadPhone = extractPhone(jid);
+
+                    // Fetch contact name
+                    let contactName = null;
+                    const { data: contactData } = await supabaseAdmin
+                        .from('whatsapp_contacts')
+                        .select('contact_name')
+                        .or(`jid.eq.${jid},lead_phone.eq.${leadPhone}`)
+                        .eq('user_id', userId)
+                        .maybeSingle();
+                    contactName = contactData?.contact_name || contactNameFromBody || leadPhone;
+
                     const { data: savedMsg, error: dbErr } = await supabaseAdmin.from('whatsapp_messages').insert({
                         user_id: userId,
                         lead_phone: leadPhone,
+                        jid: jid,
                         content,
                         sender: 'user',
                         message_id: messageId,
                         status: 'sent',
                         is_group: jid.includes('@g.us'),
+                        contact_name: contactName
                     }).select().maybeSingle();
 
                     if (dbErr) console.warn("[DB Insert Error for Media]", dbErr);
@@ -602,11 +1019,13 @@ export class WhatsAppConnectionManager {
                     this.io.to(userId).emit('whatsapp-message', {
                         id: savedMsg?.id || `temp-${messageId}`,
                         lead_phone: leadPhone,
+                        jid: jid,
                         content,
                         sender: 'user',
                         message_id: messageId,
                         timestamp: new Date().toISOString(),
                         status: 'sent',
+                        contact_name: contactName
                     });
                 } catch (dbEx) {
                     console.error("[DB Exception for Media]", dbEx);
@@ -620,56 +1039,60 @@ export class WhatsAppConnectionManager {
         }
     }
 
-    private async triggerAiReply(userId: string, leadPhone: string, latestMessage: string) {
+    private async triggerAiReply(userId: string, remoteJid: string, latestMessage: string) {
+        if (!remoteJid) return;
         try {
             const sock = this.activeSockets.get(userId);
             if (!sock) return;
 
-            const { data: credentials } = await supabaseAdmin
-                ?.from('whatsapp_credentials')
-                .select('ai_enabled')
-                .eq('user_id', userId)
-                .single() || { data: null };
+            let credentials = null;
+            if (supabaseAdmin) {
+                const { data } = await supabaseAdmin
+                    .from('whatsapp_credentials')
+                    .select('ai_enabled')
+                    .eq('user_id', userId)
+                    .single();
+                credentials = data;
+            }
 
             if (!credentials?.ai_enabled) return;
 
-            const jid = this.resolveJid(leadPhone);
-            if (!jid) {
-                console.warn('[WhatsAppConnectionManager] AI reply skipped: invalid JID for', leadPhone);
-                return;
-            }
+            if (!supabaseAdmin) return;
 
             const { data: history } = await supabaseAdmin
-                ?.from('whatsapp_messages')
+                .from('whatsapp_messages')
                 .select('*')
                 .eq('user_id', userId)
-                .eq('lead_phone', leadPhone)
+                .eq('jid', remoteJid)
                 .order('timestamp', { ascending: false })
-                .limit(5) || { data: [] };
+                .limit(5);
 
             const aiMessages = (history || []).reverse().map((m: any) => ({
                 role: m.sender === 'user' || m.sender === 'ai' ? 'assistant' : 'user',
                 content: m.content
             }));
 
-            aiMessages.unshift({ role: 'system', content: 'You are a helpful and polite CRM assistant. Keep replies brief.' });
+            aiMessages.unshift({ role: 'system', content: 'You are a helpful and polite CRM assistant. Keep replies brief. Do not use asterisks or formatting.' });
 
             const replyText = await generateAIReply(aiMessages as any);
-            await sock.sendMessage(jid, { text: replyText });
+            await sock.sendMessage(remoteJid, { text: replyText });
 
-            const leadPhoneStr = String(leadPhone);
-            const { data: aiMsg } = await supabaseAdmin?.from('whatsapp_messages').insert({
+            const leadPhone = jidToLeadPhone(remoteJid);
+            const leadPhoneStr = leadPhone || '';
+            const { data: aiMsg } = await supabaseAdmin.from('whatsapp_messages').insert({
                 user_id: userId,
                 lead_phone: leadPhoneStr,
+                jid: remoteJid,
                 content: replyText,
                 sender: 'ai',
                 status: 'sent',
                 is_group: false,
-            }).select().single() || { data: null };
+            }).select().single();
 
             this.io.to(userId).emit('whatsapp-message', {
                 id: aiMsg?.id,
                 lead_phone: leadPhoneStr,
+                jid: remoteJid,
                 content: replyText,
                 sender: 'ai',
                 timestamp: new Date().toISOString(),

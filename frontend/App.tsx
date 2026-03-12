@@ -249,10 +249,9 @@ const App = () => {
     // Show minimal loading screen while checking auth — prevents landing page flash
     if (isAuthLoading) {
       return (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', backgroundColor: '#f8fafc', flexDirection: 'column', gap: '16px' }}>
-          <div style={{ width: '48px', height: '48px', border: '4px solid #e2e8f0', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-          <p style={{ color: '#94a3b8', fontSize: '14px', fontFamily: 'sans-serif' }}>Loading…</p>
+        <div className="flex items-center justify-center min-h-screen bg-[#f8fafc] flex-col gap-4">
+          <div className="w-12 h-12 border-4 border-[#e2e8f0] border-t-[#6366f1] rounded-full animate-spin" />
+          <p className="text-[#94a3b8] text-sm font-sans">Loading…</p>
         </div>
       );
     }
@@ -318,9 +317,10 @@ const App = () => {
           user={session.user}
         />
 
-        <main className="flex-1 md:ml-64 p-4 md:p-8 pb-24 md:pb-8 max-w-[1600px] mx-auto w-full relative">
+        <main className={`flex-1 md:ml-64 ${view === 'inbox' ? 'p-0 max-w-none' : 'p-4 md:p-8 pb-24 md:pb-8 max-w-[1600px] mx-auto'} w-full relative`}>
           {/* Global Header */}
-          <div className="flex items-center justify-between md:justify-end mb-6 md:mb-8">
+          {view !== 'inbox' && (
+            <div className="flex items-center justify-between md:justify-end mb-6 md:mb-8">
             <div className="md:hidden flex items-center gap-2 font-display font-bold text-lg text-slate-800">
               <Briefcase className="w-6 h-6 text-indigo-600" /> SalesAI
             </div>
@@ -343,6 +343,7 @@ const App = () => {
               </button>
             </div>
           </div>
+        )}
 
           {dashboardContent()}
           <ConnectMetaModal

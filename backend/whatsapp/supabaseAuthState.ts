@@ -7,7 +7,7 @@ export const useSupabaseAuthState = async (userId: string) => {
     const writeData = async (data: any, id: string) => {
         try {
             const dataString = JSON.stringify(data, BufferJSON.replacer);
-            await supabaseAdmin
+            await supabaseAdmin!
                 .from('whatsapp_sessions')
                 .upsert(
                     { user_id: userId, key_id: id, key_data: JSON.parse(dataString) },
@@ -20,7 +20,7 @@ export const useSupabaseAuthState = async (userId: string) => {
 
     const readData = async (id: string) => {
         try {
-            const { data, error } = await supabaseAdmin
+            const { data, error } = await supabaseAdmin!
                 .from('whatsapp_sessions')
                 .select('key_data')
                 .eq('user_id', userId)
@@ -37,7 +37,7 @@ export const useSupabaseAuthState = async (userId: string) => {
 
     const removeData = async (id: string) => {
         try {
-            await supabaseAdmin
+            await supabaseAdmin!
                 .from('whatsapp_sessions')
                 .delete()
                 .eq('user_id', userId)
@@ -91,7 +91,9 @@ export const useSupabaseAuthState = async (userId: string) => {
         },
         saveCreds: () => writeData(creds, 'creds'),
         clearAll: async () => {
-            await supabaseAdmin?.from('whatsapp_sessions').delete().eq('user_id', userId);
+            if (supabaseAdmin) {
+                await supabaseAdmin.from('whatsapp_sessions').delete().eq('user_id', userId);
+            }
         }
     };
 };
