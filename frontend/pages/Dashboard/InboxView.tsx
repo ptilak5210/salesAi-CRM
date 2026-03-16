@@ -6,7 +6,10 @@ import {
 } from 'lucide-react';
 import { Lead, Message, AuthSession, Channel } from '../../../utils/types';
 import { analyzeLeadIntent, generateReply } from '../../../automation/geminiService';
-import { getWhatsAppCredentials, getWhatsAppMessageHistory, initInboxSocket, sendWhatsAppTextMessage, sendWhatsAppMedia } from '../../services/whatsappService';
+import {
+    getWhatsAppCredentials, getWhatsAppMessageHistory, getWhatsAppChats,
+    initInboxSocket, sendWhatsAppTextMessage, sendWhatsAppMedia
+} from '../../services/whatsappService';
 import { supabase } from '../../lib/supabase';
 
 import './InboxView.css';
@@ -22,6 +25,26 @@ interface WaConversation {
 interface WaMessage extends Message {
     message_id?: string; status?: 'sent' | 'delivered' | 'read' | 'received' | 'pending' | string;
     quotedContent?: string;
+}
+
+/** One message per identity; keeps first occurrence. Used to prevent duplicate messages in list. */
+function dedupeMessages(msgs: WaMessage[]): WaMessage[] {
+    const seen = new Set<string>();
+    return msgs.filter(m => {
+        const key = (m.message_id && `mid-${m.message_id}`) || (m.id && `id-${m.id}`) || `fp-${m.sender}-${m.timestamp?.getTime?.() ?? ''}-${(m.content || '').slice(0, 50)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+/** Stable unique key per message for React list (avoids duplicate key errors). */
+function messageListKey(msg: WaMessage, idx: number): string {
+    if (msg.id) return `id-${msg.id}`;
+    if (msg.message_id) return `mid-${msg.message_id}`;
+    const ts = msg.timestamp?.getTime?.() ?? idx;
+    const content = (msg.content || '').slice(0, 30);
+    return `msg-${ts}-${content}-${idx}`;
 }
 
 // ── Emoji picker data (common emojis, no package needed) ─────────────────────
@@ -261,10 +284,17 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
     // Resolve a display name — priority: DB contact_name > leads > formatted phone (human-readable, not raw id)
     const getContactName = useCallback((phone: string = '', contactNameFromDb?: string): string => {
         const trimmed = (contactNameFromDb || '').trim();
-        if (trimmed) return trimmed;
         const safePhone = (phone || '').replace(/\D/g, '');
+        const isNumericOrPhone = /^[\d+\-\s]+$/.test(trimmed) || trimmed === phone || trimmed === safePhone;
+
+        // Highest Priority: Existing CRM Lead
         const lead = leads.find(l => (l.phone || '').replace(/\D/g, '') === safePhone);
         if (lead?.name) return lead.name;
+
+        // Second Priority: Actual valid custom name from DB/PushName
+        if (trimmed && !isNumericOrPhone) return trimmed;
+
+        // Last Fallback: Nicely formatted phone or LID
         return formatPhoneDisplay(phone);
     }, [leads]);
 
@@ -281,79 +311,51 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
     // Track loading state explicitly to prevent spamming
     const isFetchingRef = useRef(false);
 
-    // ── 2. Load conversations from DB ─────────────────────────────────────────
+    // ── 2. Load conversations from DB (via optimized API) ────────────────────
     const loadConversations = useCallback(async (showLoader: boolean = true) => {
         if (isFetchingRef.current) return;
         isFetchingRef.current = true;
         if (showLoader) setIsLoadingConversations(true);
-        const { data: messagesData, error: msgError } = await supabase.from('whatsapp_messages')
-            .select('lead_phone, jid, content, timestamp, sender, contact_name, is_group')
-            .eq('user_id', session.user.id)
-            .order('timestamp', { ascending: false })
-            .limit(1000);
 
-        if (msgError || !messagesData) {
-            setIsLoadingConversations(false);
-            return;
-        }
-
-        let contactsData: any[] = [];
         try {
-            const { data } = await supabase.from('whatsapp_contacts')
-                .select('lead_phone, contact_name, profile_picture_url, is_group')
-                .eq('user_id', session.user.id);
-            contactsData = data || [];
-        } catch {
-            // whatsapp_contacts table may not exist yet
-        }
+            // Use the centralized service instead of manual Supabase queries
+            const data = await getWhatsAppChats(session.token);
 
-        const contactMap = new Map(contactsData.map((c: any) => [c.lead_phone, c]));
-        const nameMap = new Map<string, string>();
-        messagesData.forEach(m => {
-            const fromContact = contactMap.get(m.lead_phone)?.contact_name;
-            const name = fromContact || m.contact_name;
-            if (name && !nameMap.has(m.lead_phone)) nameMap.set(m.lead_phone, name);
-        });
-
-        const seen = new Set<string>();
-        const convs: WaConversation[] = [];
-        (messagesData as any[]).forEach(m => {
-            const rowJid = m.jid || m.lead_phone; // fallback to lead_phone if jid is null
-            if (seen.has(rowJid)) return;
-            seen.add(rowJid);
-            const meta = contactMap.get(m.lead_phone);
-            const group = m.is_group === true || isGroupPhone(m.lead_phone);
-            convs.push({
-                phone: m.lead_phone,
-                name: getContactName(m.lead_phone, meta?.contact_name || nameMap.get(m.lead_phone) || m.contact_name),
-                lastMessage: m.content,
-                lastTimestamp: new Date(m.timestamp),
-                hasUnread: false,
-                unreadCount: 0,
-                isGroup: group,
-                profilePictureUrl: meta?.profile_picture_url,
-                jid: rowJid,
-            });
-        });
-        const uniqueConversations = Object.values(
-            convs.reduce((acc, convo) => {
-                const key = convo.jid || convo.phone;
-                // keep the first one we saw natively (which is the most recent because order is descending)
-                if (!acc[key]) acc[key] = convo;
-                return acc;
-            }, {} as Record<string, WaConversation>)
-        );
-
-        setConversations(uniqueConversations);
-        setSelectedJid(prev => {
-            if (!prev && uniqueConversations.length > 0 && uniqueConversations[0].jid) {
-                return uniqueConversations[0].jid;
+            if (!data) {
+                if (showLoader) setIsLoadingConversations(false);
+                isFetchingRef.current = false;
+                return;
             }
-            return prev;
-        });
-        if (showLoader) setIsLoadingConversations(false);
-        isFetchingRef.current = false;
-    }, [session.user.id, getContactName]);
+
+            const convs: WaConversation[] = data.map((m: any) => {
+                const group = m.is_group === true || isGroupPhone(m.jid || m.lead_phone);
+                return {
+                    phone: m.lead_phone,
+                    name: m.contact_name || getContactName(m.lead_phone, m.contact_name),
+                    lastMessage: m.content,
+                    lastTimestamp: new Date(m.timestamp),
+                    hasUnread: false,
+                    unreadCount: 0,
+                    isGroup: group,
+                    profilePictureUrl: m.profile_picture_url,
+                    jid: m.jid || m.lead_phone,
+                };
+            });
+
+            setConversations(convs);
+
+            // Set initial selection if none
+            setSelectedJid(prev => {
+                if (!prev && convs.length > 0) return convs[0].jid || convs[0].phone;
+                return prev;
+            });
+        } catch (err) {
+            console.error('[InboxView] Error loading conversations:', err);
+        } finally {
+            if (showLoader) setIsLoadingConversations(false);
+            isFetchingRef.current = false;
+        }
+    }, [session.token, getContactName]);
 
     // Initial load and status sync
     useEffect(() => {
@@ -390,27 +392,29 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                         profilePictureUrl: idx >= 0 ? prev[idx].profilePictureUrl : undefined,
                         jid: rowJid,
                     };
-                    const copy = prev.filter(c => c.jid !== rowJid);
+                    const copy = prev.filter(c => c.jid !== rowJid && c.phone !== m.lead_phone);
                     return [updated, ...copy];
                 });
-                // Only add to the chat view if this message belongs to the open conversation
-                setConversations(conversations => {
-                    const rowJid = m.jid || m.lead_phone;
-                    const isForCurrent = String(rowJid) === String(selectedJidRef.current);
 
-                    if (isForCurrent) {
-                        setMessages(prev => {
-                            if (prev.find(msg => msg.id === m.id || (m.message_id && msg.message_id === m.message_id))) return prev;
-                            return [...prev, {
-                                id: m.id || `socket-${Date.now()}`,
-                                sender: m.sender, content: m.content,
-                                timestamp: new Date(m.timestamp), channel: 'WhatsApp' as Channel,
-                                message_id: m.message_id, status: m.status,
-                            }];
-                        });
-                    }
-                    return conversations; // return same array, we just used it for lookup
-                });
+                // Match current chat by both jid and lead_phone so messages show whether user selected by full JID or phone
+                const sel = String(selectedJidRef.current);
+                const isForCurrent =
+                    (m.jid != null && String(m.jid) === sel) ||
+                    (m.lead_phone != null && String(m.lead_phone) === sel) ||
+                    (m.lead_phone != null && String(m.lead_phone) + '@lid' === sel);
+
+                if (isForCurrent) {
+                    setMessages(prev => {
+                        const newMsg: WaMessage = {
+                            id: m.id || `socket-${Date.now()}`,
+                            sender: m.sender, content: m.content,
+                            timestamp: new Date(m.timestamp), channel: 'WhatsApp' as Channel,
+                            message_id: m.message_id, status: m.status,
+                        };
+                        return dedupeMessages([...prev, newMsg]);
+                    });
+                    setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+                }
             },
             onTyping: ({ leadPhone, jid, isTyping }) => {
                 const typingId = jid || leadPhone;
@@ -425,17 +429,33 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
             onStatus: ({ messageId, status }) => {
                 setMessages(prev => prev.map(m => m.message_id === messageId ? { ...m, status } : m));
             },
-            onConnected: () => { setIsWaConnected(true); setSocketConnected(true); },
+            onConnected: () => {
+                setIsWaConnected(true);
+                setSocketConnected(true);
+                // Refresh conversations to catch up any missed messages while offline
+                loadConversations(false);
+                if (selectedJidRef.current) {
+                    getWhatsAppMessageHistory(session.token, selectedJidRef.current).then(data => {
+                        const list = data.map((m: any) => ({
+                            id: m.id, sender: m.sender, content: m.content,
+                            timestamp: new Date(m.timestamp), channel: 'WhatsApp' as Channel,
+                            message_id: m.message_id, status: m.status,
+                        }));
+                        setMessages(dedupeMessages(list));
+                    });
+                }
+            },
             onDisconnected: () => { setIsWaConnected(false); setSocketConnected(false); },
             onHistorySynced: () => {
                 loadConversations(false);
                 if (selectedJidRef.current) {
                     getWhatsAppMessageHistory(session.token, selectedJidRef.current).then(data => {
-                        setMessages(data.map((m: any) => ({
+                        const list = data.map((m: any) => ({
                             id: m.id, sender: m.sender, content: m.content,
                             timestamp: new Date(m.timestamp), channel: 'WhatsApp' as Channel,
                             message_id: m.message_id, status: m.status,
-                        })));
+                        }));
+                        setMessages(dedupeMessages(list));
                     });
                 }
             },
@@ -455,7 +475,8 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                     });
 
                     // If an LID was resolved, and the current selected jid was that LID, update it
-                    if (resolved_from_lid && jid && String(selectedJidRef.current) === lead_phone) {
+                    const sel = String(selectedJidRef.current);
+                    if (resolved_from_lid && jid && (sel === lead_phone || sel === lead_phone + '@lid')) {
                         const match = updated.find(u => u.jid === jid && u.phone === lead_phone);
                         if (match) {
                             setTimeout(() => setSelectedJid(jid), 100);
@@ -476,24 +497,36 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
             .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'whatsapp_messages', filter: `user_id=eq.${session.user.id}` },
                 (payload) => {
                     const m = payload.new as any;
-                    setConversations(prev => {
-                        const idx = prev.findIndex(c => c.phone === m.lead_phone);
-                        const updated: WaConversation = {
-                            phone: m.lead_phone, name: getContactName(m.lead_phone),
-                            lastMessage: m.content, lastTimestamp: new Date(m.timestamp),
-                            hasUnread: m.sender === 'lead',
-                            unreadCount: m.sender === 'lead' ? ((idx >= 0 ? prev[idx].unreadCount : 0) || 0) + 1 : 0,
-                        };
-                        return [updated, ...prev.filter(c => c.phone !== m.lead_phone)];
-                    });
                     const rowJid = m.jid || m.lead_phone;
-                    if (rowJid === selectedJid) {
+                    setConversations(prev => {
+                        const idx = prev.findIndex(c => c.jid === rowJid || c.phone === m.lead_phone);
+                        const existingName = idx >= 0 ? prev[idx].name : '';
+                        const updated: WaConversation = {
+                            phone: m.lead_phone,
+                            name: getContactName(m.lead_phone, m.contact_name) || existingName || formatPhoneDisplay(m.lead_phone),
+                            lastMessage: m.content,
+                            lastTimestamp: new Date(m.timestamp),
+                            hasUnread: m.sender === 'lead' && String(selectedJid) !== String(rowJid) && String(selectedJid) !== String(m.lead_phone),
+                            unreadCount: (m.sender === 'lead' && String(selectedJid) !== String(rowJid) && String(selectedJid) !== String(m.lead_phone))
+                                ? ((idx >= 0 ? (prev[idx].unreadCount || 0) : 0) + 1) : (idx >= 0 ? (prev[idx].unreadCount || 0) : 0),
+                            jid: rowJid,
+                        };
+                        const copy = prev.filter(c => c.jid !== rowJid && c.phone !== m.lead_phone);
+                        return [updated, ...copy];
+                    });
+                    const getNumberPart = (j: string) => (j || '').split('@')[0];
+                    const mNum = getNumberPart(m.jid || m.lead_phone || '');
+                    const sNum = getNumberPart(selectedJid || '');
+                    const isForCurrentRealtime =
+                        (m.jid != null && String(m.jid) === String(selectedJid)) ||
+                        (m.lead_phone != null && String(m.lead_phone) === String(selectedJid)) ||
+                        (mNum !== '' && sNum !== '' && mNum === sNum);
+
+                    if (isForCurrentRealtime) {
                         setMessages(prev => {
-                            if (prev.find(msg => msg.id === m.id)) return prev;
-                            const newMsg = { id: m.id, sender: m.sender, content: m.content, timestamp: new Date(m.timestamp), channel: 'WhatsApp' as Channel, status: m.status };
-                            // Scroll to bottom when a new realtime message arrives
+                            const newMsg: WaMessage = { id: m.id, sender: m.sender, content: m.content, timestamp: new Date(m.timestamp), channel: 'WhatsApp' as Channel, message_id: m.message_id, status: m.status };
                             setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-                            return [...prev, newMsg];
+                            return dedupeMessages([...prev, newMsg]);
                         });
                     }
                 })
@@ -508,11 +541,12 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
         setMessages([]);
         setHasMoreMessages(true);
         getWhatsAppMessageHistory(session.token, selectedJid).then(data => {
-            setMessages(data.map((m: any) => ({
+            const list = data.map((m: any) => ({
                 id: m.id, sender: m.sender, content: m.content,
                 timestamp: new Date(m.timestamp), channel: 'WhatsApp' as Channel,
                 message_id: m.message_id, status: m.status,
-            })));
+            }));
+            setMessages(dedupeMessages(list));
             setHasMoreMessages(data.length >= 20); // API limit is 20
             // Scroll to bottom on initial load
             setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'auto' }), 100);
@@ -527,11 +561,12 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
             loadConversations(false);
             if (selectedJid) {
                 getWhatsAppMessageHistory(session.token, selectedJid).then(data => {
-                    setMessages(data.map((m: any) => ({
+                    const list = data.map((m: any) => ({
                         id: m.id, sender: m.sender, content: m.content,
                         timestamp: new Date(m.timestamp), channel: 'WhatsApp' as Channel,
                         message_id: m.message_id, status: m.status,
-                    })));
+                    }));
+                    setMessages(dedupeMessages(list));
                 });
             }
         };
@@ -559,9 +594,12 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                         message_id: m.message_id, status: m.status,
                     }));
 
-                    // Maintain scroll position after prepending
                     const prevScrollHeight = scrollHeight;
-                    setMessages(prev => [...newMessages, ...prev]);
+                    setMessages(prev => {
+                        const merged = dedupeMessages([...newMessages, ...prev]);
+                        merged.sort((a, b) => (a.timestamp?.getTime?.() ?? 0) - (b.timestamp?.getTime?.() ?? 0));
+                        return merged;
+                    });
                     setHasMoreMessages(data.length >= 20);
 
                     setTimeout(() => {
@@ -615,7 +653,7 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
     };
 
     const handleSendMedia = async () => {
-        if (!mediaPreview || !selectedJid) return;
+        if (!mediaPreview || !selectedJid || !selectedConversation) return;
         setIsSending(true);
         try {
             const result = await sendWhatsAppMedia(session.token, selectedJid, mediaPreview.file, inputText || undefined, selectedConversation?.name);
@@ -667,9 +705,10 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
         c.name.toLowerCase().includes(searchTerm.toLowerCase()) || c.phone.includes(searchTerm)
     );
 
-    // Group by date
+    // Sort by timestamp then group by date
+    const sortedMessages = [...messages].sort((a, b) => (a.timestamp?.getTime?.() ?? 0) - (b.timestamp?.getTime?.() ?? 0));
     const groupedMessages: { date: string; msgs: WaMessage[] }[] = [];
-    messages.forEach(msg => {
+    sortedMessages.forEach(msg => {
         const d = formatDate(msg.timestamp);
         const last = groupedMessages[groupedMessages.length - 1];
         if (last && last.date === d) last.msgs.push(msg);
@@ -681,11 +720,12 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
         loadConversations().finally(() => setIsLoadingConversations(false));
         if (selectedJid) {
             getWhatsAppMessageHistory(session.token, selectedJid).then(data => {
-                setMessages(data.map((m: any) => ({
+                const list = data.map((m: any) => ({
                     id: m.id, sender: m.sender, content: m.content,
                     timestamp: new Date(m.timestamp), channel: 'WhatsApp' as Channel,
                     message_id: m.message_id, status: m.status,
-                })));
+                }));
+                setMessages(dedupeMessages(list));
             });
         }
     };
@@ -753,12 +793,12 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                             {conversations.length === 0 ? 'No messages yet' : 'No results found'}
                         </div>
                     )}
-                    {filtered.map(conv => {
+                    {filtered.map((conv, idx) => {
                         const isSelected = conv.jid === selectedJid;
                         const avatarClass = conv.isGroup ? 'avatar-bg-group' : getAvatarClass(conv.name);
                         const initials = conv.isGroup ? '\uD83D\uDC65' : getInitials(conv.name);
                         return (
-                            <div key={conv.jid || conv.phone} onClick={() => setSelectedJid(conv.jid || conv.phone)}
+                            <div key={`${conv.jid || conv.phone || 'conv'}-${idx}`} onClick={() => setSelectedJid(conv.jid || conv.phone)}
                                 className={`conv-item ${isSelected ? 'selected' : ''}`}
                             >
                                 <div className={`avatar-circle w-[49px] h-[49px] flex-shrink-0 overflow-hidden ${avatarClass}`}>
@@ -864,10 +904,10 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                                         </span>
                                     </div>
 
-                                    {group.msgs.map(msg => {
+                                    {group.msgs.map((msg, idx) => {
                                         const isOut = msg.sender === 'user' || msg.sender === 'ai';
                                         return (
-                                            <div key={msg.message_id || msg.id || Math.random().toString()}
+                                            <div key={messageListKey(msg, idx)}
                                                 className={`flex mb-[2px] relative ${isOut ? 'justify-end' : 'justify-start'}`}
                                                 onMouseEnter={() => setHoveredMsgId(msg.id)}
                                                 onMouseLeave={() => setHoveredMsgId(null)}

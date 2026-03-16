@@ -3,11 +3,12 @@ import { Briefcase, X, Menu } from 'lucide-react';
 
 type PublicViewType = 'home' | 'features' | 'how-it-works' | 'pricing' | 'contact' | 'about';
 
-export const WebsiteNavbar = ({ onLogin, onSignup, currentView, onNavigate }: {
+export const WebsiteNavbar = ({ onLogin, onSignup, currentView, onNavigate, isLoggedIn }: {
     onLogin: () => void,
     onSignup: () => void,
     currentView: PublicViewType,
-    onNavigate: (view: PublicViewType) => void
+    onNavigate: (view: PublicViewType) => void,
+    isLoggedIn?: boolean,
 }) => {
     const [scrolled, setScrolled] = useState(false);
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -52,13 +53,24 @@ export const WebsiteNavbar = ({ onLogin, onSignup, currentView, onNavigate }: {
                 </div>
 
                 <div className="hidden md:flex items-center gap-4">
-                    <button onClick={onLogin} className="text-slate-300 hover:text-white font-medium px-4 py-2 transition-colors text-sm">Log In</button>
-                    <button onClick={onSignup} className="relative group overflow-hidden rounded-full p-[1px]">
-                        <span className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-blue-600 group-hover:from-cyan-300 group-hover:to-blue-500 transition-all"></span>
-                        <span className="relative block px-6 py-2 bg-slate-950 text-white rounded-full text-sm font-bold group-hover:bg-opacity-90 transition-all">
-                            Sign Up Free
-                        </span>
-                    </button>
+                    {isLoggedIn ? (
+                        <button onClick={onLogin} className="relative group overflow-hidden rounded-full p-[1px]">
+                            <span className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-blue-600 group-hover:from-cyan-300 group-hover:to-blue-500 transition-all"></span>
+                            <span className="relative block px-6 py-2 bg-slate-950 text-white rounded-full text-sm font-bold group-hover:bg-opacity-90 transition-all">
+                                Go to Dashboard →
+                            </span>
+                        </button>
+                    ) : (
+                        <>
+                            <button onClick={onLogin} className="text-slate-300 hover:text-white font-medium px-4 py-2 transition-colors text-sm">Log In</button>
+                            <button onClick={onSignup} className="relative group overflow-hidden rounded-full p-[1px]">
+                                <span className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-blue-600 group-hover:from-cyan-300 group-hover:to-blue-500 transition-all"></span>
+                                <span className="relative block px-6 py-2 bg-slate-950 text-white rounded-full text-sm font-bold group-hover:bg-opacity-90 transition-all">
+                                    Sign Up Free
+                                </span>
+                            </button>
+                        </>
+                    )}
                 </div>
 
                 {/* Mobile Toggle */}
@@ -76,8 +88,14 @@ export const WebsiteNavbar = ({ onLogin, onSignup, currentView, onNavigate }: {
                     <NavItem view="about" label="About Us" />
                     <NavItem view="contact" label="Contact" />
                     <div className="h-px bg-white/5 my-2"></div>
-                    <button onClick={() => { onLogin(); setMobileMenuOpen(false); }} className="text-left py-3 text-slate-300 font-medium">Log In</button>
-                    <button onClick={() => { onSignup(); setMobileMenuOpen(false); }} className="bg-gradient-to-r from-cyan-500 to-blue-600 text-white py-3 rounded-lg font-bold shadow-lg">Sign Up Free</button>
+                    {isLoggedIn ? (
+                        <button onClick={() => { onLogin(); setMobileMenuOpen(false); }} className="bg-gradient-to-r from-cyan-500 to-blue-600 text-white py-3 rounded-lg font-bold shadow-lg">Go to Dashboard →</button>
+                    ) : (
+                        <>
+                            <button onClick={() => { onLogin(); setMobileMenuOpen(false); }} className="text-left py-3 text-slate-300 font-medium">Log In</button>
+                            <button onClick={() => { onSignup(); setMobileMenuOpen(false); }} className="bg-gradient-to-r from-cyan-500 to-blue-600 text-white py-3 rounded-lg font-bold shadow-lg">Sign Up Free</button>
+                        </>
+                    )}
                 </div>
             )}
         </nav>

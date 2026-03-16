@@ -32,3 +32,24 @@ If you see "policy already exists", run **MIGRATE_WHATSAPP.sql**; it drops polic
 3. **Connect WhatsApp:** In the app go to **Dashboard → Automations**. Under "WhatsApp Connection" click **Setup** and scan the QR code with WhatsApp on your phone. Wait until it shows **CONNECTED**.
 4. **Auto-respond when a client writes:** In **Automations**, open **Auto-Responder** (same section). Turn **Enable auto-reply** on and set the message (e.g. "Thank you! We'll reply shortly."). Click **Save**. When a lead sends a message, they will get this reply automatically. Optionally use **AI Agent Replier** instead for AI-generated replies.
 5. **Inbox:** Use **Dashboard → Inbox** to view and send messages. If you see "WhatsApp offline", ensure WhatsApp is connected in Automations and that the backend is running; status refreshes every few seconds.
+
+## Troubleshooting
+
+- **Backend must run on port 3001** for the Inbox and WhatsApp send to work. Use `npm run dev:backend` (or your usual backend start command). If the frontend can’t reach the backend, Inbox will show offline and sends will fail.
+- **Messages not reaching WhatsApp:** When you send from the CRM Inbox, check the backend logs. You should see a log like `==> Hit /api/whatsapp/send` when a send is requested. If sends still don’t reach WhatsApp, look for send errors in the backend logs and confirm WhatsApp is connected in Automations.
+
+
+bilobed whatsapp 
+node js library
+
+
+auth-supabase
+oauth-supabase
+database-supabase
+
+
+whatsapp-qr 
+
+
+redis
+https://console.upstash.com/redis/87808327-26ed-46a2-b43b-674fb6b91e1b?teamid=0

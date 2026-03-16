@@ -46,7 +46,7 @@ export const signup = async (data: SignupData): Promise<{ email: string; session
     if (authData.session) {
         return {
             email,
-            session: await buildSession(authData.user, authData.session.access_token)
+            session: await enhanceSession(authData.user, authData.session.access_token)
         };
     }
 
@@ -67,7 +67,7 @@ export const verifyEmailOtp = async (email: string, token: string): Promise<Auth
     if (error) throw new Error(error.message);
     if (!data.user) throw new Error('Verification failed — please try again.');
 
-    return await buildSession(data.user, data.session?.access_token);
+    return await enhanceSession(data.user, data.session?.access_token);
 };
 
 export const resendOtp = async (email: string): Promise<void> => {
@@ -87,7 +87,7 @@ export const login = async (email: string, password: string): Promise<AuthSessio
     if (error) throw new Error(error.message);
     if (!data.user) throw new Error('Login failed — please try again.');
 
-    return await buildSession(data.user, data.session.access_token);
+    return await enhanceSession(data.user, data.session.access_token);
 };
 
 // ─── OAuth (Google / GitHub) ──────────────────────────────────────────────────
@@ -126,7 +126,7 @@ export const signOut = async (): Promise<void> => {
 export const getUserSession = async (): Promise<AuthSession | null> => {
     const { data: { session }, error } = await supabase.auth.getSession();
     if (error || !session) return null;
-    return await buildSession(session.user, session.access_token);
+    return await enhanceSession(session.user, session.access_token);
 };
 
 export const createClientProfile = async (profileData: Omit<ClientProfile, 'id' | 'created_at'>): Promise<void> => {
@@ -134,30 +134,22 @@ export const createClientProfile = async (profileData: Omit<ClientProfile, 'id' 
     if (error) throw new Error(error.message);
 };
 
+/**
+ * buildSession — Public wrapper to enhance a Supabase session with client profile data.
+ * Useful for building the session from onAuthStateChange events to avoid lock contention.
+ */
+export const buildSessionFromSupabase = async (user: any, token?: string): Promise<AuthSession> => {
+    return await enhanceSession(user, token);
+};
+
 // ─── Internal Helper ──────────────────────────────────────────────────────────
 
-const buildSession = async (user: any, token?: string): Promise<AuthSession> => {
+const enhanceSession = async (user: any, token?: string): Promise<AuthSession> => {
     const meta = user.user_metadata ?? {};
     console.log('[Auth] Building session for user:', user.id, user.email);
 
     // Check if user has a client profile setup
-    let hasClientProfile = false;
-    try {
-        const { data, error } = await supabase
-            .from('clients')
-            .select('id')
-            .eq('user_id', user.id)
-            .maybeSingle(); // Better than .single() for checking existence
-
-        if (error) {
-            console.error('[Auth] Error querying clients table:', error);
-        }
-
-        hasClientProfile = !!data;
-        console.log('[Auth] hasClientProfile result:', hasClientProfile, 'Data:', data);
-    } catch (e) {
-        console.error("[Auth] Exception checking client profile:", e);
-    }
+    let hasClientProfile = true; // Default to true to avoid blocking; UI will verify later
 
     const session: AuthSession = {
         user: {

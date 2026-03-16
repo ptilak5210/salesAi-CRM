@@ -107,16 +107,16 @@ export const DashboardView = ({ session, leads, MOCK_DEALS, activities, refreshA
                                 <div key={lead.id} className="flex items-center justify-between p-4 rounded-lg bg-slate-50 border border-slate-100">
                                     <div className="flex items-center gap-3">
                                         <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold">
-                                            {lead.name.charAt(0)}
+                                            {lead.name?.charAt(0) || '?'}
                                         </div>
                                         <div>
-                                            <h4 className="font-semibold text-slate-800 text-sm">{lead.name}</h4>
-                                            <p className="text-xs text-slate-500">{lead.company}</p>
+                                            <h4 className="font-semibold text-slate-800 text-sm">{lead.name || 'Unknown Lead'}</h4>
+                                            <p className="text-xs text-slate-500">{lead.company || 'No Company'}</p>
                                         </div>
                                     </div>
                                     <div className="text-right">
                                         <span className={`text-xs font-bold px-2 py-1 rounded-full ${lead.score === 'Hot' ? 'bg-red-100 text-red-600' : 'bg-orange-100 text-orange-600'}`}>
-                                            {lead.score}
+                                            {lead.score || 'Cold'}
                                         </span>
                                     </div>
                                 </div>
@@ -152,12 +152,12 @@ export const DashboardView = ({ session, leads, MOCK_DEALS, activities, refreshA
                                             <div className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse"></div>
                                             AI Booking Request
                                         </div>
-                                        <h4 className="font-bold text-slate-800 text-sm">{meeting.title}</h4>
-                                        <p className="text-xs text-slate-500 font-medium">with {meeting.attendee}</p>
+                                        <h4 className="font-bold text-slate-800 text-sm">{meeting.title || 'Untitled Meeting'}</h4>
+                                        <p className="text-xs text-slate-500 font-medium">with {meeting.attendee || 'Guest'}</p>
                                     </div>
                                     <div className="text-right">
-                                        <div className="text-sm font-bold text-slate-700">{meeting.date}</div>
-                                        <div className="text-xs text-slate-500">{formatTimeAMPM(meeting.time)}</div>
+                                        <div className="text-sm font-bold text-slate-700">{meeting.date || 'No Date'}</div>
+                                        <div className="text-xs text-slate-500">{meeting.time ? formatTimeAMPM(meeting.time) : '--:--'}</div>
                                     </div>
                                 </div>
                                 <div className="flex gap-2 mt-2">
@@ -181,16 +181,16 @@ export const DashboardView = ({ session, leads, MOCK_DEALS, activities, refreshA
                         {upcomingMeetings.map(meeting => (
                             <div key={meeting.id} className="flex items-start gap-4 p-4 rounded-lg border-l-4 border-indigo-500 bg-indigo-50/30">
                                 <div className="flex flex-col items-center justify-center min-w-[4rem] text-center border-r border-indigo-100 pr-3">
-                                    <span className="text-xs font-bold text-slate-500 uppercase">{meeting.date.split(' ')[0]}</span>
-                                    <span className="text-sm font-bold text-indigo-600 whitespace-nowrap">{formatTimeAMPM(meeting.time).split(' ')[0]}</span>
-                                    <span className="text-[10px] font-bold text-slate-400">{formatTimeAMPM(meeting.time).split(' ')[1] || ''}</span>
+                                    <span className="text-xs font-bold text-slate-500 uppercase">{(meeting.date || '?? ??').split(' ')[0]}</span>
+                                    <span className="text-sm font-bold text-indigo-600 whitespace-nowrap">{meeting.time ? formatTimeAMPM(meeting.time).split(' ')[0] : '--:--'}</span>
+                                    <span className="text-[10px] font-bold text-slate-400">{meeting.time ? (formatTimeAMPM(meeting.time).split(' ')[1] || '') : ''}</span>
                                 </div>
                                 <div>
-                                    <h4 className="font-bold text-slate-800 text-sm">{meeting.title}</h4>
-                                    <p className="text-xs text-slate-600 font-medium mt-0.5">with {meeting.attendee}</p>
+                                    <h4 className="font-bold text-slate-800 text-sm">{meeting.title || 'Untitled Meeting'}</h4>
+                                    <p className="text-xs text-slate-600 font-medium mt-0.5">with {meeting.attendee || 'Guest'}</p>
                                     <div className="flex items-center gap-1.5 mt-2 text-xs text-slate-500">
-                                        <div className={`w-1.5 h-1.5 rounded-full ${meeting.type.toLowerCase().includes('zoom') ? 'bg-blue-400' : 'bg-green-400'}`}></div>
-                                        {meeting.type}
+                                        <div className={`w-1.5 h-1.5 rounded-full ${(meeting.type || 'Meeting').toLowerCase().includes('zoom') ? 'bg-blue-400' : 'bg-green-400'}`}></div>
+                                        {meeting.type || 'Meeting'}
                                     </div>
                                 </div>
                             </div>

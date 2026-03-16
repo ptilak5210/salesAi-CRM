@@ -86,11 +86,6 @@ export const initInboxSocket = (userId: string, callbacks: {
         callbacks.onMessage(data);
     });
 
-    inboxSocket.on('new_whatsapp_message', (data: any) => {
-        console.log('[InboxSocket] new_whatsapp_message received (fallback):', data?.content?.substring?.(0, 50));
-        callbacks.onMessage(data);
-    });
-
     inboxSocket.on('whatsapp-typing', (data: any) => {
         callbacks.onTyping(data);
     });
@@ -196,6 +191,22 @@ export const disconnectWhatsApp = async (token: string): Promise<void> => {
     if (!res.ok) throw new Error(json.error || 'Failed to disconnect.');
     if (socket) { socket.disconnect(); socket = null; }
     if (inboxSocket) { inboxSocket.disconnect(); inboxSocket = null; }
+};
+
+// ── Read grouped chats (conversations) ──────────────────────────────────────
+export const getWhatsAppChats = async (token: string): Promise<any[]> => {
+    try {
+        const freshToken = await getFreshToken(token);
+        const res = await fetch(`${API_BASE}/api/whatsapp/chats`, {
+            headers: { Authorization: `Bearer ${freshToken}` }
+        });
+        if (!res.ok) return [];
+        const { data } = await res.json();
+        return data || [];
+    } catch (e) {
+        console.error('[WhatsAppService] Error fetching grouped chats:', e);
+        return [];
+    }
 };
 
 // ── Read message history (always fresh from DB, ordered by timestamp) ─────────

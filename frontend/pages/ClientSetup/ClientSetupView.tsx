@@ -5,7 +5,8 @@ import {
     ArrowRight, ArrowLeft, Loader2, CheckCircle2
 } from 'lucide-react';
 import { AuthSession } from '../../../utils/types';
-import { createClientProfile, getUserSession } from '../../auth/authService';
+import { createClientProfile, getUserSession, buildSessionFromSupabase } from '../../auth/authService';
+import { supabase } from '../../lib/supabase';
 
 interface ClientSetupViewProps {
     session: AuthSession;
@@ -74,8 +75,9 @@ export const ClientSetupView = ({ session, onSetupComplete }: ClientSetupViewPro
                 whatsapp_number: formData.whatsapp_number
             });
 
-            const updatedSession = await getUserSession();
-            if (updatedSession) {
+            const { data: { session: supabaseSession } } = await supabase.auth.getSession();
+            if (supabaseSession) {
+                const updatedSession = await buildSessionFromSupabase(supabaseSession.user, supabaseSession.access_token);
                 onSetupComplete(updatedSession);
             } else {
                 onSetupComplete({ ...session, hasClientProfile: true });

@@ -1,0 +1,10 @@
+/* ── App.css — Global App layout styles ─────────────────────────────────────── */
+
+/* InboxView container — uses 'contents' to pass grid layout through when visible,
+   'none' to fully hide it without unmounting (preserves state/connection). */
+.inbox-view-wrapper[data-visible="true"] {
+    display: contents;
+}
+.inbox-view-wrapper[data-visible="false"] {
+    display: none;
+}

@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 
 import { ConnectWhatsAppModal } from '../../components/Dashboard/ConnectWhatsAppModal';
-import { getWhatsAppCredentials, updateAutoReplyConfig } from '../../services/whatsappService';
+import { getWhatsAppCredentials, updateAutoReplyConfig, toggleAiReply } from '../../services/whatsappService';
 import { AuthSession } from '../../../utils/types';
 
 interface AutomationsViewProps {
@@ -62,17 +62,13 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
         try {
             const newState = !aiEnabled;
             setAiEnabled(newState); // Optimistic update
-            await fetch('http://localhost:3001/api/whatsapp/ai-toggle', {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${session.token}`
-                },
-                body: JSON.stringify({ enabled: newState })
-            });
+            const res = await toggleAiReply(session.token, newState);
+            if (!res.success) {
+                setAiEnabled(!newState); // Revert on error
+                console.error('Failed to toggle AI settings:', res.error);
+            }
         } catch (error) {
             console.error('Failed to toggle AI settings', error);
-            // Revert state on failure
             setAiEnabled(!aiEnabled);
         }
     };

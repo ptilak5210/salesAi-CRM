@@ -1,38 +1,42 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI } from "@google/genai";
+import dotenv from "dotenv";
 
-const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-});
+dotenv.config();
 
-export const generateAIReply = async (messageHistory: { role: string, content: string }[]): Promise<string> => {
+const apiKey = process.env.GEMINI_API_KEY || "";
+const ai = new GoogleGenAI({ apiKey });
+
+export async function generateAIReply(messages: { role: string; content: string }[]): Promise<string> {
     try {
-        let systemInstruction = '';
-        const contents: any[] = [];
-
-        for (const msg of messageHistory) {
-            if (msg.role === 'system') {
-                systemInstruction += msg.content + '\n';
-            } else {
-                contents.push({
-                    role: msg.role === 'user' ? 'user' : 'model',
-                    parts: [{ text: msg.content || '' }]
-                });
-            }
+        if (!apiKey) {
+            console.error("GEMINI_API_KEY is not set in .env");
+            return "AI feature not configured.";
         }
 
+        // Format for Gemini API
+        // System message first if present
+        const systemMsg = messages.find(m => m.role === 'system');
+        const otherMsgs = messages.filter(m => m.role !== 'system');
+        
+        const history = otherMsgs.slice(0, -1).map(m => ({
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: m.content }]
+        }));
+        
+        const lastMessage = otherMsgs[otherMsgs.length - 1]?.content || "";
+
+        const prompt = systemMsg 
+            ? `System Instructions: ${systemMsg.content}\n\nClient Message: ${lastMessage}\nConversation context: ${history.map(h => `${h.role}: ${h.parts[0].text}`).join("\n")}`
+            : `Conversation history:\n${history.map(h => `${h.role}: ${h.parts[0].text}`).join("\n")}\n\nClient: ${lastMessage}`;
+
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: contents,
-            config: {
-                systemInstruction: systemInstruction.trim() || undefined,
-                temperature: 0.7,
-                maxOutputTokens: 150,
-            }
+            model: "gemini-3-flash-preview",
+            contents: prompt,
         });
 
-        return response.text || 'Sorry, I am unable to respond at the moment.';
+        return response.text?.trim() || "Thank you for your message. We'll get back to you soon.";
     } catch (error) {
-        console.error('Gemini API Error:', error);
-        return 'Sorry, I am experiencing technical difficulties.';
+        console.error("AI Generation Error:", error);
+        return "Thank you for your message. Our team will get back to you shortly.";
     }
-};
+}

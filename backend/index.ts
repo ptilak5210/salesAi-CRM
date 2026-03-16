@@ -6,6 +6,7 @@ import multer from 'multer';
 import { requireAuth } from './middleware/auth';
 import { supabaseAdmin } from '../database/supabase';
 import { WhatsAppConnectionManager } from './whatsapp/connection';
+import { initWorker } from './queue/messageQueue';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024 * 1024 } });
 
@@ -57,6 +58,9 @@ app.use((req, res, next) => {
 // Initialize WhatsApp Connection Manager
 const waManager = new WhatsAppConnectionManager(io);
 
+// Initialize Message Queue Worker
+initWorker(waManager);
+
 // Basic Socket.IO connection handler
 io.on('connection', (socket) => {
     console.log('Client connected to WebSocket:', socket.id);
@@ -98,6 +102,15 @@ io.on('connection', (socket) => {
 
         console.log(`Starting WhatsApp auth flow for user ${userId} on socket ${socket.id}`);
         socket.join(userId);
+
+        // Guard: if a Baileys socket is already active, skip starting a new one.
+        // This prevents the frontend from killing a healthy connection by re-emitting
+        // this event on component re-mount or socket reconnect (the 428 loop root cause).
+        if (waManager.activeSockets.has(userId)) {
+            console.log(`[Socket.IO] start-whatsapp-auth: session already active for ${userId} — skipping new connect, notifying frontend.`);
+            socket.emit('whatsapp-connected');
+            return;
+        }
 
         try {
             await waManager.connectToWhatsApp(userId, socket.id);
@@ -211,8 +224,12 @@ app.patch('/api/whatsapp/auto-reply-config', requireAuth, async (req, res): Prom
 app.post('/api/whatsapp/send', requireAuth, async (req, res): Promise<any> => {
     console.log("==> Hit /api/whatsapp/send");
     try {
-        const userId = req.user.id;
+        // userId can come from token (req.user.id) or body (for n8n API key auth)
+        const userId = req.user?.id || req.body.userId;
         const { to, message, quotedMsgId, contact_name } = req.body;
+        
+        if (!userId) return res.status(400).json({ error: 'Missing `userId`. Provide it in body if using API key.' });
+        
         console.log(`Sending message to ${to} from ${userId}...`);
 
         if (!to || !message) return res.status(400).json({ error: 'Missing `to` or `message`.' });
@@ -244,8 +261,50 @@ app.post('/api/whatsapp/send-media', requireAuth, upload.single('file'), async (
     const result = await waManager.sendMedia(userId, to, file.buffer, file.mimetype, caption, file.originalname, contact_name);
     if (!result.success) return res.status(500).json({ error: result.error });
 
-    // Message saved to DB and emitted via Socket by connection.ts
     return res.json({ success: true, messageId: result.messageId });
+});
+
+/**
+ * GET /api/whatsapp/chats
+ * Returns a list of the most recent message per conversation (grouped by JID)
+ */
+app.get('/api/whatsapp/chats', requireAuth, async (req, res): Promise<any> => {
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
+
+    const userId = req.user.id;
+    try {
+        // We use a custom query to get the latest message for each JID
+        const { data, error } = await supabaseAdmin.rpc('get_recent_whatsapp_chats', { 
+            p_user_id: userId 
+        });
+
+        if (error) {
+            // Fallback if RPC doesn't exist: simple grouping
+            console.warn("[API] get_recent_whatsapp_chats RPC failed, using fallback grouping:", error.message);
+            const { data: fallback, error: fallbackErr } = await supabaseAdmin
+                .from('whatsapp_messages')
+                .select('*')
+                .eq('user_id', userId)
+                .order('timestamp', { ascending: false })
+                .order('id', { ascending: false });
+
+            if (fallbackErr) throw fallbackErr;
+
+            // Manual deduplication by JID
+            const uniqueChatsMap = new Map();
+            (fallback || []).forEach(msg => {
+                if (!uniqueChatsMap.has(msg.jid)) {
+                    uniqueChatsMap.set(msg.jid, msg);
+                }
+            });
+            return res.json({ data: Array.from(uniqueChatsMap.values()) });
+        }
+
+        return res.json({ data });
+    } catch (err: any) {
+        console.error('[API] Error fetching chats:', err);
+        return res.status(500).json({ error: err.message });
+    }
 });
 
 // ── Activities / Meetings ────────────────────────────────────────────────────
@@ -396,6 +455,7 @@ app.get('/api/whatsapp/chats', requireAuth, async (req, res): Promise<any> => {
         .select('lead_phone, jid, content, timestamp, sender, contact_name, is_group')
         .eq('user_id', userId)
         .order('timestamp', { ascending: false })
+        .order('id', { ascending: false })
         .limit(1000);
 
     if (msgError) return res.status(500).json({ error: msgError.message });
@@ -444,41 +504,59 @@ app.get('/api/whatsapp/chats', requireAuth, async (req, res): Promise<any> => {
     return res.json({ data: chats });
 });
 
-// Normalize JID function
+// Normalize JID for message-history lookups.
+// @g.us → keep. @s.whatsapp.net → keep. @lid → keep (never blindly convert).
+// Bare phone digits → phone@s.whatsapp.net.
 function normalizeJid(jid: string) {
-    if (!jid.includes('@')) {
-        return jid + '@lid';
-    }
-    return jid;
+    if (!jid) return jid;
+    if (jid.includes('@g.us')) return jid;
+    if (jid.includes('@s.whatsapp.net')) return jid;
+    if (jid.includes('@lid')) return jid; // @lid stays @lid — cannot be converted
+    // bare phone number
+    const digits = jid.replace(/\D/g, '');
+    return digits ? digits + '@s.whatsapp.net' : jid;
 }
 
 // 3. Fetch Message History (latest messages from DB, ordered by timestamp)
-app.get('/api/whatsapp/messages/:jid', requireAuth, async (req, res): Promise<any> => {
+app.get('/api/whatsapp/messages/:identifier', requireAuth, async (req, res): Promise<any> => {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
 
     const userId = req.user.id;
-    const jidParam = decodeURIComponent(String(req.params.jid ?? ''));
-    const jid = normalizeJid(jidParam);
+    const identifier = decodeURIComponent(String(req.params.identifier ?? ''));
+    
+    // Attempt to normalize if it looks like a phone number but doesn't have suffix
+    const normalizedIdentifier = identifier.includes('@') ? identifier : normalizeJid(identifier);
+    
     const cursor = req.query.cursor ? String(req.query.cursor) : null;
     const limitParams = req.query.limit ? parseInt(String(req.query.limit)) : 20;
     const limit = isNaN(limitParams) ? 20 : limitParams;
+
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
     let query = supabaseAdmin
         .from('whatsapp_messages')
         .select('*')
         .eq('user_id', userId)
-        .eq('jid', jid);
+        .gte('timestamp', sevenDaysAgo.toISOString())
+        .or(`jid.eq.${normalizedIdentifier},lead_phone.eq.${identifier},jid.eq.${identifier}`);
 
     if (cursor) {
         query = query.lt('timestamp', cursor);
     }
 
-    const { data, error } = await query
-        .order('timestamp', { ascending: false })
-        .limit(limit);
+    try {
+        const { data, error } = await query
+            .order('timestamp', { ascending: false })
+            .order('id', { ascending: false })
+            .limit(limit);
 
-    if (error) return res.status(500).json({ error: error.message });
-    return res.json({ data: data.reverse() });
+        if (error) throw error;
+        return res.json({ data: (data || []).reverse() });
+    } catch (err: any) {
+        console.error(`[API] Error fetching messages for ${identifier}:`, err);
+        return res.status(500).json({ error: err.message });
+    }
 });
 
 // Ensure API always returns JSON on errors (e.g. 500)
