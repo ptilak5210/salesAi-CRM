@@ -1,6 +1,10 @@
-import { supabaseAdmin } from './database/supabase';
+import { supabaseAdmin } from '../database/supabase';
 
 async function run() {
+    if (!supabaseAdmin) {
+        console.error("Supabase Admin is not configured. Missing environment variables.");
+        return;
+    }
     console.log("Checking last 10 sent messages...");
     try {
         const { data, error } = await supabaseAdmin

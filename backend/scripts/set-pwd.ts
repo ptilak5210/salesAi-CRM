@@ -1,4 +1,4 @@
-import { supabaseAdmin } from '../database/supabase';
+import { supabaseAdmin } from '../../database/supabase';
 
 async function setPassword() {
     if (!supabaseAdmin) return;

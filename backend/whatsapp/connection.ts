@@ -267,9 +267,12 @@ export class WhatsAppConnectionManager {
                     const sender = fromMe ? (msg.key.participant ? 'lead' : 'user') : 'lead';
                     const actualSender = fromMe ? 'user' : 'lead';
 
-                    let contactName = msg.pushName || contactMap.get(remoteJid)?.name || '';
+                    let contactName = contactMap.get(remoteJid)?.name || '';
+                    if (!fromMe && msg.pushName) contactName = msg.pushName || contactName;
+
                     if (isGroup && msg.key.participant) {
-                        contactName = msg.pushName || contactMap.get(msg.key.participant)?.name || contactName;
+                        contactName = contactMap.get(msg.key.participant)?.name || contactName;
+                        if (!fromMe && msg.pushName) contactName = msg.pushName || contactName;
                     }
 
                     const msgId = msg.key.id;
@@ -544,7 +547,10 @@ export class WhatsAppConnectionManager {
             }
             // Note: if still @lid, finalJid = remoteJid — message stored with @lid for display
         }
-        let contactName = msg.pushName || '';
+        let contactName = '';
+        if (!fromMe && msg.pushName) {
+            contactName = msg.pushName;
+        }
 
         if (!contactName) {
             try {
@@ -719,22 +725,41 @@ export class WhatsAppConnectionManager {
             if (!isOutgoing && !isGroup && content.trim().toLowerCase() === 'i am interested') {
                 console.log(`[WhatsAppConnectionManager] "I am interested" matched for ${remoteJid}`);
                 try {
-                    // Create standard lead if not already caught (ignoring errors if exists)
+                    // Sync interested user to CRM Leads
                     if (supabaseAdmin) {
-                        await supabaseAdmin.from('leads').insert({
-                            user_id: userId,
-                            name: contactName || leadPhoneStr,
-                            phone: leadPhoneStr,
-                            whatsapp: leadPhoneStr,
-                            source: 'whatsapp',
-                            display_name: contactName || leadPhoneStr,
-                            status: 'New'
-                        });
+                        try {
+                            const { data: existingLead } = await supabaseAdmin
+                                .from('leads')
+                                .select('id')
+                                .eq('user_id', userId)
+                                .eq('mobile', leadPhoneStr)
+                                .maybeSingle();
+
+                            if (existingLead) {
+                                await supabaseAdmin
+                                    .from('leads')
+                                    .update({ status: 'Follow Up', score: 'Hot', updated_at: new Date().toISOString() })
+                                    .eq('id', existingLead.id);
+                            } else {
+                                await supabaseAdmin.from('leads').insert({
+                                    user_id: userId,
+                                    name: contactName || leadPhoneStr,
+                                    display_name: contactName || leadPhoneStr,
+                                    email: '',
+                                    mobile: leadPhoneStr,
+                                    status: 'New',
+                                    score: 'Hot',
+                                    source: 'WhatsApp Auto-Reply'
+                                });
+                            }
+                        } catch (e) {
+                            console.error('[WhatsAppConnectionManager] Failed to upsert interested lead:', e);
+                        }
                     }
 
                     if (sock) {
                         const replyContent = "Thank you for your interest! Our team will contact you shortly.";
-                        const sendTo = await this.ensureSendableJid(sock, remoteJid, userId);
+                        const sendTo = await this.ensureSendableJid(sock, finalJid, userId);
                         if ('error' in sendTo) {
                             console.warn('[WhatsAppConnectionManager] "I am interested" reply skipped:', sendTo.error);
                         } else {
@@ -788,7 +813,7 @@ export class WhatsAppConnectionManager {
                 const autoText = (credentials?.auto_reply_text ?? '').trim();
                 if (autoReplyEnabled && autoText) {
                     try {
-                        const jidForSend = isGroup ? remoteJid : (jidNormalizedUser(remoteJid) || remoteJid);
+                        const jidForSend = isGroup ? finalJid : (jidNormalizedUser(finalJid) || finalJid);
                         if (!jidForSend) {
                             console.warn('[WhatsAppConnectionManager] Auto-reply skipped: invalid JID for', leadPhoneStr);
                         } else {
@@ -829,7 +854,7 @@ export class WhatsAppConnectionManager {
                         console.error('[WhatsAppConnectionManager] Error sending auto-reply:', err);
                     }
                 } else if (credentials?.ai_enabled) {
-                    await this.triggerAiReply(userId, remoteJid, content);
+                    await this.triggerAiReply(userId, finalJid, content);
                 }
             }
         } catch (e) {
@@ -869,17 +894,15 @@ export class WhatsAppConnectionManager {
             const list = (rows || []) as { jid?: string }[];
             // CRITICAL: Always prefer @s.whatsapp.net or @g.us over @lid
             const preferred = list.find(r => r.jid && (r.jid.endsWith('@s.whatsapp.net') || r.jid.endsWith('@g.us')));
-            
+
             if (preferred?.jid) {
                 jid = preferred.jid;
-            } else if (toForLookup.length >= 7 && !toForLookup.includes('@')) {
-                if (toForLookup.length < 15) {
-                    jid = `${toForLookup}@s.whatsapp.net`;
-                } else {
-                    jid = `${toForLookup}@lid`;
-                }
+            } else if (to.includes('@')) {
+                jid = to;
+            } else if (toForLookup.length >= 7) {
+                jid = `${toForLookup}@s.whatsapp.net`;
             } else {
-                jid = this.resolveJid(to) || list[0]?.jid || ''; 
+                jid = this.resolveJid(to) || list[0]?.jid || '';
             }
         }
 
@@ -898,9 +921,9 @@ export class WhatsAppConnectionManager {
         }
 
         try {
-            console.log(`[WhatsAppConnectionManager] [Worker] Sending message. User: ${userId}, JID: ${jid}, SocketStatus: ${sock.user ? 'Connected as '+sock.user.id : 'No user'}`);
+            console.log(`[WhatsAppConnectionManager] [Worker] Sending message. User: ${userId}, JID: ${jid}, SocketStatus: ${sock.user ? 'Connected as ' + sock.user.id : 'No user'}`);
             const result = await sock.sendMessage(jid, { text });
-            
+
             if (!result) {
                 console.error(`[WhatsAppConnectionManager] sendMessage returned null/undefined for ${jid}`);
                 return { success: false, error: 'WhatsApp failed to send the message (empty response).' };
@@ -1008,7 +1031,7 @@ export class WhatsAppConnectionManager {
                 console.warn('[WhatsAppConnectionManager] LID resolve for send failed:', e);
             }
             // If we cannot resolve it to a standard phone number, WhatsApp STILL fully
-            // supports native messaging directly to the LID. Do not block it.
+            // supports native messaging directly to the LID in many cases. Do not block it.
             return { jid };
         }
 
@@ -1038,17 +1061,15 @@ export class WhatsAppConnectionManager {
             const list = (rows || []) as { jid?: string }[];
             // CRITICAL: Always prefer @s.whatsapp.net or @g.us over @lid
             const preferred = list.find(r => r.jid && (r.jid.endsWith('@s.whatsapp.net') || r.jid.endsWith('@g.us')));
-            
+
             if (preferred?.jid) {
                 jid = preferred.jid;
-            } else if (toForLookup.length >= 7 && !toForLookup.includes('@')) {
-                if (toForLookup.length < 15) {
-                    jid = `${toForLookup}@s.whatsapp.net`;
-                } else {
-                    jid = `${toForLookup}@lid`;
-                }
+            } else if (to.includes('@')) {
+                jid = to;
+            } else if (toForLookup.length >= 7) {
+                jid = `${toForLookup}@s.whatsapp.net`;
             } else {
-                jid = this.resolveJid(to) || list[0]?.jid || ''; 
+                jid = this.resolveJid(to) || list[0]?.jid || '';
             }
         }
 
@@ -1225,7 +1246,7 @@ export class WhatsAppConnectionManager {
     public async disconnectWhatsApp(userId: string) {
         console.log(`[WhatsAppConnectionManager] Manual disconnect requested for user ${userId}`);
         const sock = this.activeSockets.get(userId);
-        
+
         // 1. Always clear the DB session state first
         try {
             const { clearAll } = await useSupabaseAuthState(userId);
@@ -1237,9 +1258,9 @@ export class WhatsAppConnectionManager {
 
         // 2. Logout and clean up the active socket
         if (sock) {
-            try { 
+            try {
                 // We don't await logout because it can hang if already disconnected
-                sock.logout().catch((e: any) => console.warn('[WhatsAppConnectionManager] Logout failed (expected if already offline):', e.message)); 
+                sock.logout().catch((e: any) => console.warn('[WhatsAppConnectionManager] Logout failed (expected if already offline):', e.message));
             } catch (e) { }
             this.activeSockets.delete(userId);
         }

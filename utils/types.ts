@@ -1,5 +1,5 @@
 
-export type LeadStatus = 'New' | 'Contacted' | 'Replied' | 'Qualified' | 'Closed';
+export type LeadStatus = 'New' | 'Contacted' | 'Replied' | 'Qualified' | 'Closed' | 'Follow Up';
 export type LeadScoreTag = 'Hot' | 'Warm' | 'Cold';
 export type Channel = 'WhatsApp' | 'LinkedIn' | 'Email';
 export type UserRole = 'ADMIN' | 'CLIENT' | 'Owner' | 'Agent'; // Updated roles

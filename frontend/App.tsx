@@ -190,15 +190,15 @@ const App = () => {
       } else if (data) {
         setLeads(data.map(lead => ({
           id: lead.id,
-          name: lead.name,
-          email: lead.email,
-          phone: lead.whatsapp || lead.mobile || '', // Use whatsapp as primary phone
-          company: lead.display_name || lead.name,
+          name: lead.name || lead.display_name || 'Unknown',
+          email: lead.email || '',
+          phone: lead.mobile || '',           // maps DB `mobile` column → Lead.phone
+          company: lead.display_name || lead.name || '',
           role: 'Client',
-          status: lead.status || 'New',
-          score: lead.score || 'Cold',
-          source: 'Manual',
-          lastContact: lead.updated_at ? new Date(lead.updated_at).toLocaleDateString() : 'Recent'
+          status: (lead.status || 'New') as any,
+          score: (lead.score || 'Cold') as any,
+          source: lead.source || 'Manual',
+          lastContact: lead.updated_at ? new Date(lead.updated_at).toLocaleDateString() : 'Never'
         })));
       }
     };

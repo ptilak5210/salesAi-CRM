@@ -2,7 +2,13 @@ import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const supabaseAdmin = createClient(process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+if (!url || !key) {
+    console.error("Missing supabase credentials");
+    process.exit(1);
+}
+const supabaseAdmin = createClient(url, key);
 
 async function run() {
   const { data, error } = await supabaseAdmin

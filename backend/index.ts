@@ -531,14 +531,10 @@ app.get('/api/whatsapp/messages/:identifier', requireAuth, async (req, res): Pro
     const limitParams = req.query.limit ? parseInt(String(req.query.limit)) : 20;
     const limit = isNaN(limitParams) ? 20 : limitParams;
 
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
     let query = supabaseAdmin
         .from('whatsapp_messages')
         .select('*')
         .eq('user_id', userId)
-        .gte('timestamp', sevenDaysAgo.toISOString())
         .or(`jid.eq.${normalizedIdentifier},lead_phone.eq.${identifier},jid.eq.${identifier}`);
 
     if (cursor) {
