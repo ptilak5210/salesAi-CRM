@@ -721,11 +721,29 @@ export class WhatsAppConnectionManager {
                 } catch (_) { /* ignore if table missing */ }
             }
 
-            // --- HARDCODED "I AM INTERESTED" AUTOMATION ---
-            if (!isOutgoing && !isGroup && content.trim().toLowerCase() === 'i am interested') {
-                console.log(`[WhatsAppConnectionManager] "I am interested" matched for ${remoteJid}`);
-                try {
-                    // Sync interested user to CRM Leads
+            // ── Auto-Responder: keyword-triggered, settings-driven ────────────────
+            // Fires ONLY when the incoming message contains an "interested" keyword.
+            // Respects the Enable Auto Reply toggle and uses only the configured message text.
+            if (!isOutgoing && !isGroup && sock) {
+                const INTERESTED_KEYWORDS = ['i am interested', 'interested', 'intrested'];
+                const msgLower = content.trim().toLowerCase();
+                const isInterested = INTERESTED_KEYWORDS.some(kw => msgLower.includes(kw));
+
+                // Fetch credentials once — used by both keyword-reply and AI-reply paths
+                let credentials: { ai_enabled?: boolean; auto_reply_enabled?: boolean; auto_reply_text?: string } | null = null;
+                if (supabaseAdmin) {
+                    const { data } = await supabaseAdmin
+                        .from('whatsapp_credentials')
+                        .select('ai_enabled, auto_reply_enabled, auto_reply_text')
+                        .eq('user_id', userId)
+                        .maybeSingle();
+                    credentials = data;
+                }
+
+                if (isInterested) {
+                    console.log(`[WhatsAppConnectionManager] Keyword "interested" matched for ${remoteJid}. Syncing lead...`);
+
+                    // Restore Lead Sync Logic
                     if (supabaseAdmin) {
                         try {
                             const { data: existingLead } = await supabaseAdmin
@@ -757,103 +775,60 @@ export class WhatsAppConnectionManager {
                         }
                     }
 
-                    if (sock) {
-                        const replyContent = "Thank you for your interest! Our team will contact you shortly.";
-                        const sendTo = await this.ensureSendableJid(sock, finalJid, userId);
-                        if ('error' in sendTo) {
-                            console.warn('[WhatsAppConnectionManager] "I am interested" reply skipped:', sendTo.error);
-                        } else {
-                            const sendResult = await sock.sendMessage(sendTo.jid, { text: replyContent });
+                    const autoReplyEnabled = credentials?.auto_reply_enabled === true;
+                    const autoText = (credentials?.auto_reply_text ?? '').trim();
 
-                            if (supabaseAdmin) {
-                                const { data: autoMsg } = await supabaseAdmin.from('whatsapp_messages').insert({
-                                    user_id: userId,
-                                    lead_phone: leadPhoneStr,
-                                    jid: sendTo.jid,
-                                    content: replyContent,
-                                    sender: 'ai',
-                                    status: 'sent',
-                                    is_group: false,
-                                    message_id: sendResult?.key?.id || undefined,
-                                    contact_name: contactName
-                                }).select().single();
-
-                                this.io.to(userId).emit('whatsapp-message', {
-                                    id: autoMsg?.id,
-                                    lead_phone: leadPhoneStr,
-                                    jid: sendTo.jid,
-                                    content: replyContent,
-                                    sender: 'ai',
-                                    message_id: sendResult?.key?.id,
-                                    timestamp: autoMsg?.timestamp || new Date().toISOString(),
-                                    status: 'sent',
-                                });
-                            }
-                        }
-                    }
-                    return; // Early return to avoid duplicate generic auto-replies
-                } catch (e) {
-                    console.error('[WhatsAppConnectionManager] Auto-reply error:', e);
-                }
-            }
-            // ---------------------------------------------
-
-            if (!isOutgoing && !isGroup && sock) {
-                let credentials = null;
-                if (supabaseAdmin) {
-                    const { data } = await supabaseAdmin
-                        .from('whatsapp_credentials')
-                        .select('ai_enabled, auto_reply_enabled, auto_reply_text')
-                        .eq('user_id', userId)
-                        .maybeSingle();
-                    credentials = data;
-                }
-
-                const autoReplyEnabled = credentials?.auto_reply_enabled === true;
-                const autoText = (credentials?.auto_reply_text ?? '').trim();
-                if (autoReplyEnabled && autoText) {
-                    try {
-                        const jidForSend = isGroup ? finalJid : (jidNormalizedUser(finalJid) || finalJid);
-                        if (!jidForSend) {
-                            console.warn('[WhatsAppConnectionManager] Auto-reply skipped: invalid JID for', leadPhoneStr);
-                        } else {
-                            const sendTo = await this.ensureSendableJid(sock, jidForSend, userId);
-                            if ('error' in sendTo) {
-                                console.warn('[WhatsAppConnectionManager] Auto-reply skipped:', sendTo.error);
+                    if (autoReplyEnabled && autoText) {
+                        // Auto-reply is ON and message text is configured — send it
+                        try {
+                            const jidForSend = jidNormalizedUser(finalJid) || finalJid;
+                            if (!jidForSend) {
+                                console.warn('[WhatsAppConnectionManager] Auto-reply skipped: invalid JID for', leadPhoneStr);
                             } else {
-                                console.log('[WhatsAppConnectionManager] Sending auto-reply to JID:', sendTo.jid);
-                                const sendResult = await sock.sendMessage(sendTo.jid, { text: autoText });
-                                const autoMessageId = sendResult?.key?.id;
-                                let autoMsg = null;
-                                if (supabaseAdmin) {
-                                    const { data } = await supabaseAdmin.from('whatsapp_messages').insert({
-                                        user_id: userId,
+                                const sendTo = await this.ensureSendableJid(sock, jidForSend, userId);
+                                if ('error' in sendTo) {
+                                    console.warn('[WhatsAppConnectionManager] Auto-reply skipped:', sendTo.error);
+                                } else {
+                                    console.log('[WhatsAppConnectionManager] Sending auto-reply to JID:', sendTo.jid);
+                                    const sendResult = await sock.sendMessage(sendTo.jid, { text: autoText });
+                                    const autoMessageId = sendResult?.key?.id;
+                                    let autoMsg = null;
+                                    if (supabaseAdmin) {
+                                        const { data } = await supabaseAdmin.from('whatsapp_messages').insert({
+                                            user_id: userId,
+                                            lead_phone: leadPhoneStr,
+                                            jid: sendTo.jid,
+                                            content: autoText,
+                                            sender: 'ai',
+                                            status: 'sent',
+                                            is_group: false,
+                                            message_id: autoMessageId || undefined,
+                                            contact_name: contactName || null,
+                                        }).select().single();
+                                        autoMsg = data;
+                                    }
+                                    this.io.to(userId).emit('whatsapp-message', {
+                                        id: autoMsg?.id,
                                         lead_phone: leadPhoneStr,
                                         jid: sendTo.jid,
                                         content: autoText,
                                         sender: 'ai',
+                                        message_id: autoMessageId,
+                                        timestamp: autoMsg?.timestamp || new Date().toISOString(),
                                         status: 'sent',
-                                        is_group: false,
-                                        message_id: autoMessageId || undefined,
-                                    }).select().single();
-                                    autoMsg = data;
+                                    });
                                 }
-                                this.io.to(userId).emit('whatsapp-message', {
-                                    id: autoMsg?.id,
-                                    lead_phone: leadPhoneStr,
-                                    jid: sendTo.jid,
-                                    content: autoText,
-                                    sender: 'ai',
-                                    message_id: autoMessageId,
-                                    timestamp: autoMsg?.timestamp || new Date().toISOString(),
-                                    status: 'sent',
-                                });
                             }
+                        } catch (err) {
+                            console.error('[WhatsAppConnectionManager] Error sending auto-reply:', err);
                         }
-                    } catch (err) {
-                        console.error('[WhatsAppConnectionManager] Error sending auto-reply:', err);
+                    } else if (!autoReplyEnabled) {
+                        console.log('[WhatsAppConnectionManager] Auto-reply is disabled — skipping reply.');
+                    } else if (!autoText) {
+                        console.log('[WhatsAppConnectionManager] Auto-reply message is empty — skipping reply.');
                     }
                 } else if (credentials?.ai_enabled) {
+                    // Keyword not matched — fall through to AI reply if enabled
                     await this.triggerAiReply(userId, finalJid, content);
                 }
             }

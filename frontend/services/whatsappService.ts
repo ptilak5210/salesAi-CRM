@@ -166,16 +166,22 @@ export const updateAutoReplyConfig = async (
     enabled: boolean,
     text: string
 ): Promise<{ success: boolean; error?: string }> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000); // 10 s timeout
     try {
         const freshToken = await getFreshToken(token);
         const res = await fetch(`${API_BASE}/api/whatsapp/auto-reply-config`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${freshToken}` },
-            body: JSON.stringify({ enabled, text })
+            body: JSON.stringify({ enabled, text }),
+            signal: controller.signal,
         });
+        clearTimeout(timeout);
         const data = await res.json();
         return { success: res.ok, error: data.error };
     } catch (e: any) {
+        clearTimeout(timeout);
+        if (e.name === 'AbortError') return { success: false, error: 'Request timed out. Please try again.' };
         return { success: false, error: e.message };
     }
 };

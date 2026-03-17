@@ -13,8 +13,6 @@ interface AutomationsViewProps {
     session: AuthSession;
 }
 
-const DEFAULT_AUTO_REPLY_TEXT = 'Thank you for your message! Our team will get back to you shortly.';
-
 export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }: AutomationsViewProps) => {
     const [activeTab, setActiveTab] = useState('Marketplace');
     const [whatsAppModalOpen, setWhatsAppModalOpen] = useState(false);
@@ -23,9 +21,10 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
     const [isWhatsAppConnected, setIsWhatsAppConnected] = useState(false);
     const [aiEnabled, setAiEnabled] = useState(false);
     const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
-    const [autoReplyText, setAutoReplyText] = useState(DEFAULT_AUTO_REPLY_TEXT);
+    const [autoReplyText, setAutoReplyText] = useState('');
     const [autoReplySaving, setAutoReplySaving] = useState(false);
     const [autoReplyError, setAutoReplyError] = useState('');
+    const [autoReplySaved, setAutoReplySaved] = useState(false);
 
     // Poll for changes
     useEffect(() => {
@@ -34,14 +33,18 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
             const meta = localStorage.getItem('metaConnected') === 'true';
             if (meta !== isMetaConnected) setIsMetaConnected(meta);
 
-            // WhatsApp Status (via service)
+            // WhatsApp Status (via service) — but only sync settings from DB when modal is closed
+            // to avoid overwriting the user's local toggle state mid-edit
             try {
                 const creds = await getWhatsAppCredentials(session.token);
                 if (creds) {
                     setIsWhatsAppConnected(!!creds.is_connected);
-                    setAiEnabled(!!creds.ai_enabled);
-                    setAutoReplyEnabled(!!creds.auto_reply_enabled);
-                    if (creds.auto_reply_text != null) setAutoReplyText(creds.auto_reply_text);
+                    // Only apply remote settings when the modal is NOT open (user is not editing)
+                    if (!autoReplyModalOpen) {
+                        setAiEnabled(!!creds.ai_enabled);
+                        setAutoReplyEnabled(!!creds.auto_reply_enabled);
+                        if (creds.auto_reply_text != null) setAutoReplyText(creds.auto_reply_text);
+                    }
                 }
             } catch (e) {
                 console.error("Failed to fetch WhatsApp status", e);
@@ -51,7 +54,8 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
         checkStatuses();
         const interval = setInterval(checkStatuses, 8000);
         return () => clearInterval(interval);
-    }, [isMetaConnected, isWhatsAppConnected, aiEnabled, autoReplyEnabled, session.token]);
+    }, [isMetaConnected, isWhatsAppConnected, session.token, autoReplyModalOpen]);
+
 
     const toggleAi = async () => {
         if (!isWhatsAppConnected) {
@@ -88,12 +92,16 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
         try {
             const res = await updateAutoReplyConfig(session.token, autoReplyEnabled, autoReplyText);
             if (res.success) {
-                setAutoReplyModalOpen(false);
+                setAutoReplySaved(true);
+                setTimeout(() => {
+                    setAutoReplySaved(false);
+                    setAutoReplyModalOpen(false);
+                }, 1200);
             } else {
-                setAutoReplyError(res.error ?? 'Failed to save');
+                setAutoReplyError(res.error ?? 'Failed to save. Check your connection and try again.');
             }
         } catch (e) {
-            setAutoReplyError('Failed to save');
+            setAutoReplyError('Failed to save. Check your connection and try again.');
         } finally {
             setAutoReplySaving(false);
         }
@@ -318,18 +326,23 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
                         <div className="mt-6 flex justify-end gap-2">
                             <button
                                 type="button"
-                                onClick={() => !autoReplySaving && setAutoReplyModalOpen(false)}
-                                className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                                onClick={() => !autoReplySaving && !autoReplySaved && setAutoReplyModalOpen(false)}
+                                disabled={autoReplySaving || autoReplySaved}
+                                className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-40"
                             >
                                 Cancel
                             </button>
                             <button
                                 type="button"
                                 onClick={saveAutoReplyConfig}
-                                disabled={autoReplySaving}
-                                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg"
+                                disabled={autoReplySaving || autoReplySaved}
+                                className={`px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-50 ${
+                                    autoReplySaved
+                                        ? 'bg-green-500'
+                                        : 'bg-blue-600 hover:bg-blue-700'
+                                }`}
                             >
-                                {autoReplySaving ? 'Saving…' : 'Save'}
+                                {autoReplySaved ? '✓ Saved!' : autoReplySaving ? 'Saving…' : 'Save'}
                             </button>
                         </div>
                     </div>

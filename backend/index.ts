@@ -227,9 +227,9 @@ app.post('/api/whatsapp/send', requireAuth, async (req, res): Promise<any> => {
         // userId can come from token (req.user.id) or body (for n8n API key auth)
         const userId = req.user?.id || req.body.userId;
         const { to, message, quotedMsgId, contact_name } = req.body;
-        
+
         if (!userId) return res.status(400).json({ error: 'Missing `userId`. Provide it in body if using API key.' });
-        
+
         console.log(`Sending message to ${to} from ${userId}...`);
 
         if (!to || !message) return res.status(400).json({ error: 'Missing `to` or `message`.' });
@@ -274,8 +274,8 @@ app.get('/api/whatsapp/chats', requireAuth, async (req, res): Promise<any> => {
     const userId = req.user.id;
     try {
         // We use a custom query to get the latest message for each JID
-        const { data, error } = await supabaseAdmin.rpc('get_recent_whatsapp_chats', { 
-            p_user_id: userId 
+        const { data, error } = await supabaseAdmin.rpc('get_recent_whatsapp_chats', {
+            p_user_id: userId
         });
 
         if (error) {
@@ -468,7 +468,7 @@ app.get('/api/whatsapp/chats', requireAuth, async (req, res): Promise<any> => {
     const contactMap = new Map((contacts || []).map((c: any) => [c.lead_phone, c]));
 
     const seen = new Set<string>();
-    
+
     // First pass to discover the best non-empty / non-phone contact_name for each JID
     const bestNameMap = new Map<string, string>();
     for (const m of messages || []) {
@@ -487,9 +487,9 @@ app.get('/api/whatsapp/chats', requireAuth, async (req, res): Promise<any> => {
         if (seen.has(rowJid)) continue;
         seen.add(rowJid);
         const meta = contactMap.get(m.lead_phone);
-        
+
         let finalContactName = meta?.contact_name || bestNameMap.get(rowJid) || m.contact_name;
-        
+
         chats.push({
             jid: rowJid,
             lead_phone: m.lead_phone,
@@ -523,10 +523,10 @@ app.get('/api/whatsapp/messages/:identifier', requireAuth, async (req, res): Pro
 
     const userId = req.user.id;
     const identifier = decodeURIComponent(String(req.params.identifier ?? ''));
-    
+
     // Attempt to normalize if it looks like a phone number but doesn't have suffix
     const normalizedIdentifier = identifier.includes('@') ? identifier : normalizeJid(identifier);
-    
+
     const cursor = req.query.cursor ? String(req.query.cursor) : null;
     const limitParams = req.query.limit ? parseInt(String(req.query.limit)) : 20;
     const limit = isNaN(limitParams) ? 20 : limitParams;
