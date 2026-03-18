@@ -26,6 +26,16 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
     const [autoReplyError, setAutoReplyError] = useState('');
     const [autoReplySaved, setAutoReplySaved] = useState(false);
 
+    // AI Agent Settings State
+    const [aiAgentModalOpen, setAiAgentModalOpen] = useState(false);
+    const [aiAgentEnabled, setAiAgentEnabled] = useState(false);
+    const [webhookUrl, setWebhookUrl] = useState('');
+    const [aiAgentSaving, setAiAgentSaving] = useState(false);
+    const [aiAgentError, setAiAgentError] = useState('');
+    const [aiAgentSaved, setAiAgentSaved] = useState(false);
+    const [testingWebhook, setTestingWebhook] = useState(false);
+    const [testResult, setTestResult] = useState<{success?: boolean; message?: string} | null>(null);
+
     // Poll for changes
     useEffect(() => {
         const checkStatuses = async () => {
@@ -44,6 +54,10 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
                         setAiEnabled(!!creds.ai_enabled);
                         setAutoReplyEnabled(!!creds.auto_reply_enabled);
                         if (creds.auto_reply_text != null) setAutoReplyText(creds.auto_reply_text);
+                    }
+                    if (!aiAgentModalOpen) {
+                        setAiAgentEnabled(!!creds.ai_agent_enabled);
+                        if (creds.n8n_webhook_url) setWebhookUrl(creds.n8n_webhook_url);
                     }
                 }
             } catch (e) {
@@ -74,6 +88,65 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
         } catch (error) {
             console.error('Failed to toggle AI settings', error);
             setAiEnabled(!aiEnabled);
+        }
+    };
+
+    const openAiAgentModal = () => {
+        if (!isWhatsAppConnected) {
+            setWhatsAppModalOpen(true);
+            return;
+        }
+        setAiAgentError('');
+        setTestResult(null);
+        setAiAgentModalOpen(true);
+    };
+
+    const saveAiAgentConfig = async () => {
+        setAiAgentSaving(true);
+        setAiAgentError('');
+        try {
+            // dynamically imported to avoid circular dependencies if any, but since we import at top it's fine
+            const { toggleAiAgent, updateAiAgentConfig } = await import('../../services/whatsappService');
+            
+            // Save URL first
+            const urlRes = await updateAiAgentConfig(session.token, webhookUrl);
+            if (!urlRes.success) throw new Error(urlRes.error || 'Failed to save webhook URL.');
+            
+            // Then save toggle state
+            const toggleRes = await toggleAiAgent(session.token, aiAgentEnabled);
+            if (!toggleRes.success) throw new Error(toggleRes.error || 'Failed to toggle AI Agent.');
+
+            setAiAgentSaved(true);
+            
+            // If we enable n8n AI agent, the basic AI should visually turn off (as handled by backend)
+            if (aiAgentEnabled) setAiEnabled(false);
+
+            setTimeout(() => {
+                setAiAgentSaved(false);
+                setAiAgentModalOpen(false);
+            }, 1200);
+        } catch (e: any) {
+            setAiAgentError(e.message || 'Failed to save configuration.');
+        } finally {
+            setAiAgentSaving(false);
+        }
+    };
+
+    const runWebhookTest = async () => {
+        setTestingWebhook(true);
+        setTestResult(null);
+        try {
+            const { testAiAgentWebhook, updateAiAgentConfig } = await import('../../services/whatsappService');
+            
+            // Auto-save the URL first to ensure the backend tests the current input
+            await updateAiAgentConfig(session.token, webhookUrl);
+            
+            const res = await testAiAgentWebhook(session.token);
+            setTestResult({ success: res.success, message: res.success ? 'Success! Webhook triggered.' : (res.error || 'Test failed.') });
+        } catch (e: any) {
+            setTestResult({ success: false, message: e.message || 'Test failed due to network error.' });
+        } finally {
+            setTestingWebhook(false);
         }
     };
 
@@ -147,11 +220,11 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
                 },
                 {
                     name: 'AI Agent Replier',
-                    description: 'Automatically handle customer inquiries using your configured AI agent prompt.',
-                    icon: <Share2 className={`w-6 h-6 ${isWhatsAppConnected ? (aiEnabled ? 'text-purple-600' : 'text-slate-400') : 'text-slate-300'}`} />,
-                    status: isWhatsAppConnected ? (aiEnabled ? 'ACTIVE' : 'INACTIVE') : 'Requires WA >',
-                    isConnected: aiEnabled,
-                    onClick: toggleAi
+                    description: 'Automatically handle customer inquiries using your configured AI agent prompt or n8n workflows.',
+                    icon: <Share2 className={`w-6 h-6 ${isWhatsAppConnected ? (aiAgentEnabled || aiEnabled ? 'text-purple-600' : 'text-slate-400') : 'text-slate-300'}`} />,
+                    status: isWhatsAppConnected ? (aiAgentEnabled ? 'n8n ACTIVE' : aiEnabled ? 'BASIC ACTIVE' : 'Configure >') : 'Requires WA >',
+                    isConnected: aiEnabled || aiAgentEnabled,
+                    onClick: openAiAgentModal
                 }
             ]
         },
@@ -343,6 +416,111 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
                                 }`}
                             >
                                 {autoReplySaved ? '✓ Saved!' : autoReplySaving ? 'Saving…' : 'Save'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* AI Agent (n8n) Settings Modal */}
+            {aiAgentModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => !aiAgentSaving && setAiAgentModalOpen(false)}>
+                    <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full mx-4 p-6" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                                <Share2 className="w-5 h-5 text-purple-600" />
+                                AI Agent Replier (n8n Integration)
+                            </h3>
+                            <button type="button" onClick={() => !aiAgentSaving && setAiAgentModalOpen(false)} className="p-1 rounded-lg hover:bg-slate-100" aria-label="Close">
+                                <X className="w-5 h-5 text-slate-500" />
+                            </button>
+                        </div>
+                        <p className="text-sm text-slate-500 mb-6">Connect your advanced n8n AI workflow to automatically reply, qualify leads, and book meetings. (Basic AI will be disabled when this is active).</p>
+                        
+                        <div className="flex items-center gap-3 mb-6 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                            {aiAgentEnabled ? (
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked="true"
+                                    aria-label="Toggle AI Agent"
+                                    onClick={() => setAiAgentEnabled(false)}
+                                    className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none bg-purple-600"
+                                >
+                                    <span className="inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out translate-x-5" />
+                                </button>
+                            ) : (
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked="false"
+                                    aria-label="Toggle AI Agent"
+                                    onClick={() => setAiAgentEnabled(true)}
+                                    className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none bg-slate-200"
+                                >
+                                    <span className="inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out translate-x-1" />
+                                </button>
+                            )}
+                            <div>
+                                <span className="text-sm font-bold text-slate-800 block">Enable n8n AI Agent</span>
+                                <span className="text-xs text-slate-500">Route all incoming WhatsApp messages to n8n Webhook</span>
+                            </div>
+                        </div>
+
+                        <div className="mb-4">
+                            <label className="block text-sm font-medium text-slate-700 mb-2">n8n Webhook URL</label>
+                            <input
+                                type="url"
+                                value={webhookUrl}
+                                onChange={e => setWebhookUrl(e.target.value)}
+                                placeholder="https://your-n8n-domain/webhook/xxxx"
+                                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 font-mono"
+                            />
+                            <p className="text-xs text-slate-500 mt-2">Paste the Production URL of your 'Receive Lead (WhatsApp)' webhook node.</p>
+                        </div>
+
+                        <div className="mb-6 flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-100">
+                            <span className="text-sm text-slate-700 font-medium tracking-tight">Test Connection</span>
+                            <div className="flex items-center gap-3">
+                                {testResult && (
+                                    <span className={`text-xs font-bold ${testResult.success ? 'text-green-600' : 'text-red-500'}`}>
+                                        {testResult.message}
+                                    </span>
+                                )}
+                                <button 
+                                    onClick={runWebhookTest}
+                                    disabled={testingWebhook || !webhookUrl}
+                                    className="px-3 py-1.5 text-xs font-bold bg-white border border-slate-200 shadow-sm text-slate-700 hover:bg-slate-50 rounded-md disabled:opacity-50 flex items-center gap-2"
+                                >
+                                    {testingWebhook ? (
+                                       <> <span className="w-3 h-3 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin"></span> Testing...</>
+                                    ) : 'Send Test Ping'}
+                                </button>
+                            </div>
+                        </div>
+
+                        {aiAgentError && <p className="mb-4 text-sm text-red-600 bg-red-50 p-2 rounded-lg">{aiAgentError}</p>}
+                        
+                        <div className="mt-6 flex justify-end gap-2 border-t pt-4">
+                            <button
+                                type="button"
+                                onClick={() => !aiAgentSaving && !aiAgentSaved && setAiAgentModalOpen(false)}
+                                disabled={aiAgentSaving || aiAgentSaved}
+                                className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-40"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={saveAiAgentConfig}
+                                disabled={aiAgentSaving || aiAgentSaved}
+                                className={`px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-50 ${
+                                    aiAgentSaved
+                                        ? 'bg-green-500'
+                                        : 'bg-purple-600 hover:bg-purple-700'
+                                }`}
+                            >
+                                {aiAgentSaved ? '✓ Saved!' : aiAgentSaving ? 'Saving…' : 'Save Configuration'}
                             </button>
                         </div>
                     </div>

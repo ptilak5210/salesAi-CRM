@@ -160,6 +160,70 @@ export const toggleAiReply = async (token: string, enabled: boolean): Promise<{ 
     }
 };
 
+// ── n8n AI Agent Replier ──────────────────────────────────────────────────────
+export const toggleAiAgent = async (token: string, enabled: boolean): Promise<{ success: boolean; error?: string }> => {
+    try {
+        const freshToken = await getFreshToken(token);
+        const res = await fetch(`${API_BASE}/api/whatsapp/ai-agent-toggle`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${freshToken}` },
+            body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        return { success: res.ok, error: data.error };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+};
+
+export const updateAiAgentConfig = async (token: string, webhookUrl: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+        const freshToken = await getFreshToken(token);
+        const res = await fetch(`${API_BASE}/api/whatsapp/ai-agent-config`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${freshToken}` },
+            body: JSON.stringify({ webhookUrl })
+        });
+        const data = await res.json();
+        return { success: res.ok, error: data.error };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+};
+
+export const testAiAgentWebhook = async (token: string): Promise<{ success: boolean; message?: string; error?: string }> => {
+    try {
+        const freshToken = await getFreshToken(token);
+        const res = await fetch(`${API_BASE}/api/whatsapp/ai-agent-test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${freshToken}` }
+        });
+        const data = await res.json();
+        return { 
+            success: res.ok, 
+            message: data.message,
+            error: data.error 
+        };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+};
+
+export const setHumanTakeover = async (token: string, leadPhone: string, paused: boolean): Promise<{ success: boolean; error?: string }> => {
+    try {
+        const freshToken = await getFreshToken(token);
+        const res = await fetch(`${API_BASE}/api/whatsapp/human-takeover`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${freshToken}` },
+            body: JSON.stringify({ lead_phone: leadPhone, paused })
+        });
+        const data = await res.json();
+        return { success: res.ok, error: data.error };
+    } catch (e: any) {
+        return { success: false, error: e.message };
+    }
+};
+
 // ── Update auto-reply config (fixed message sent when client messages) ────────
 export const updateAutoReplyConfig = async (
     token: string,

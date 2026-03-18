@@ -730,14 +730,92 @@ export class WhatsAppConnectionManager {
                 const isInterested = INTERESTED_KEYWORDS.some(kw => msgLower.includes(kw));
 
                 // Fetch credentials once — used by both keyword-reply and AI-reply paths
-                let credentials: { ai_enabled?: boolean; auto_reply_enabled?: boolean; auto_reply_text?: string } | null = null;
+                let credentials: { ai_enabled?: boolean; auto_reply_enabled?: boolean; auto_reply_text?: string; ai_agent_enabled?: boolean; n8n_webhook_url?: string } | null = null;
                 if (supabaseAdmin) {
                     const { data } = await supabaseAdmin
                         .from('whatsapp_credentials')
-                        .select('ai_enabled, auto_reply_enabled, auto_reply_text')
+                        .select('ai_enabled, auto_reply_enabled, auto_reply_text, ai_agent_enabled, n8n_webhook_url')
                         .eq('user_id', userId)
                         .maybeSingle();
                     credentials = data;
+                }
+
+                // ── n8n AI Agent Replier Check ────────────────────────
+                console.log(`[n8n Debug] Credentials fetched: ai_agent_enabled=${credentials?.ai_agent_enabled}, webhook=${credentials?.n8n_webhook_url ? 'SET' : 'MISSING'}`);
+                let aiPaused = false;
+                if (credentials?.ai_agent_enabled && credentials?.n8n_webhook_url) {
+                    // Check if AI is paused for this specific lead (Human Takeover)
+                    if (supabaseAdmin) {
+                        const { data: contactCheck } = await supabaseAdmin
+                            .from('whatsapp_contacts')
+                            .select('ai_paused')
+                            .eq('user_id', userId)
+                            .eq('lead_phone', leadPhoneStr)
+                            .maybeSingle();
+                        aiPaused = !!contactCheck?.ai_paused;
+                        console.log(`[n8n Debug] ai_paused for ${leadPhoneStr}: ${aiPaused}`);
+                    }
+
+                    if (!aiPaused) {
+                        // ── Lead Sync: Always run, regardless of which AI handles the reply ──
+                        // This ensures leads are created/updated even when n8n is replying
+                        if (supabaseAdmin) {
+                            try {
+                                const { data: existingLeadN8n } = await supabaseAdmin
+                                    .from('leads')
+                                    .select('id')
+                                    .eq('user_id', userId)
+                                    .eq('mobile', leadPhoneStr)
+                                    .maybeSingle();
+
+                                if (existingLeadN8n) {
+                                    await supabaseAdmin
+                                        .from('leads')
+                                        .update({ status: 'Follow Up', score: 'Hot', updated_at: new Date().toISOString() })
+                                        .eq('id', existingLeadN8n.id);
+                                    console.log(`[n8n Debug] ✅ Lead updated (Hot/Follow Up) for ${leadPhoneStr}`);
+                                } else {
+                                    await supabaseAdmin.from('leads').insert({
+                                        user_id: userId,
+                                        name: contactName || leadPhoneStr,
+                                        display_name: contactName || leadPhoneStr,
+                                        email: '',
+                                        mobile: leadPhoneStr,
+                                        status: 'New',
+                                        score: 'Hot',
+                                        source: 'n8n AI Agent'
+                                    });
+                                    console.log(`[n8n Debug] ✅ New lead created for ${leadPhoneStr}`);
+                                }
+                            } catch (e) {
+                                console.error('[n8n Debug] Failed to upsert lead:', e);
+                            }
+                        }
+
+                        console.log(`[n8n Debug] ✅ Forwarding to n8n: ${credentials.n8n_webhook_url} for ${leadPhoneStr}`);
+                        try {
+                            // Fire and forget - do not await or block
+                            fetch(credentials.n8n_webhook_url, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    userId,
+                                    from: leadPhoneStr,
+                                    jid: finalJid,
+                                    contact_name: contactName || leadPhoneStr,
+                                    message: content,
+                                    timestamp: new Date().toISOString()
+                                })
+                            }).catch(err => console.error('[n8n Forward Error]:', err));
+                        } catch (err) {
+                            console.error('[n8n Fetch Setup Error]:', err);
+                        }
+                        
+                        // Skip legacy auto-reply — n8n will handle the response
+                        return;
+                    } else {
+                        console.log(`[WhatsAppConnectionManager] n8n skipped for ${leadPhoneStr} because AI is PAUSED (Human Takeover).`);
+                    }
                 }
 
                 if (isInterested) {
@@ -945,6 +1023,20 @@ export class WhatsAppConnectionManager {
                         status: 'sent',
                         contact_name: contactName
                     });
+                    
+                    // ── Auto-Pause AI (Human Takeover) ───────────────────
+                    // If the user manually sends a message, pause the AI for this lead
+                    if (supabaseAdmin) {
+                        try {
+                            await supabaseAdmin.from('whatsapp_contacts').update({ ai_paused: true })
+                                .eq('user_id', userId).eq('lead_phone', leadPhone);
+                            await supabaseAdmin.from('leads').update({ ai_paused: true })
+                                .eq('user_id', userId).eq('whatsapp_number', leadPhone);
+                        } catch (err) {
+                            console.warn('[WhatsAppConnectionManager] Failed to auto-pause AI:', err);
+                        }
+                    }
+
                 } catch (dbEx) {
                     console.error("[DB Exception for Send]", dbEx);
                 }

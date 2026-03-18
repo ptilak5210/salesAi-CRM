@@ -42,11 +42,18 @@ export interface WhatsAppCredential {
   access_token: string;
   waba_id?: string;
   is_connected: boolean;
-  ai_enabled?: boolean;
-  auto_reply_enabled?: boolean;
-  auto_reply_text?: string;
+  ai_enabled: boolean;
+  auto_reply_enabled: boolean;
+  auto_reply_text: string | null;
+  ai_agent_enabled?: boolean;
+  n8n_webhook_url?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface WhatsAppContact {
+  updated_at: string;
+  ai_paused?: boolean;
 }
 
 export interface AuthSession {

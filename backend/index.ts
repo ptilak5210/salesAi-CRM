@@ -202,6 +202,120 @@ app.patch('/api/whatsapp/ai-toggle', requireAuth, async (req, res): Promise<any>
     return res.json({ success: true, ai_enabled: enabled });
 });
 
+// ── n8n AI Agent Replier Config ────────────────────────────────────────────────
+// PATCH /api/whatsapp/ai-agent-toggle
+app.patch('/api/whatsapp/ai-agent-toggle', requireAuth, async (req, res): Promise<any> => {
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
+    const userId = req.user.id;
+    const { enabled } = req.body;
+
+    // Auto-disable regular ai_enabled if ai_agent_enabled is turned on to avoid conflicts
+    const updates: any = { ai_agent_enabled: enabled };
+    if (enabled) updates.ai_enabled = false;
+
+    const { error } = await supabaseAdmin
+        .from('whatsapp_credentials')
+        .update(updates)
+        .eq('user_id', userId);
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true, ai_agent_enabled: enabled });
+});
+
+// PATCH /api/whatsapp/ai-agent-config
+app.patch('/api/whatsapp/ai-agent-config', requireAuth, async (req, res): Promise<any> => {
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
+    const userId = req.user.id;
+    const { webhookUrl } = req.body;
+
+    const { error } = await supabaseAdmin
+        .from('whatsapp_credentials')
+        .update({ n8n_webhook_url: webhookUrl })
+        .eq('user_id', userId);
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true });
+});
+
+// POST /api/whatsapp/ai-agent-test
+app.post('/api/whatsapp/ai-agent-test', requireAuth, async (req, res): Promise<any> => {
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
+    const userId = req.user.id;
+
+    const { data, error } = await supabaseAdmin
+        .from('whatsapp_credentials')
+        .select('n8n_webhook_url')
+        .eq('user_id', userId)
+        .single();
+
+    if (error || !data?.n8n_webhook_url) {
+        return res.status(400).json({ error: 'No webhook URL configured.' });
+    }
+
+    try {
+        const payload = {
+            test: true,
+            userId,
+            message: 'This is a test message from SalesAI Dashboard',
+            timestamp: new Date().toISOString()
+        };
+
+        const response = await fetch(data.n8n_webhook_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            return res.status(502).json({ error: `Webhook returned status ${response.status}` });
+        }
+
+        return res.json({ success: true, message: 'Webhook test successful!' });
+    } catch (e: any) {
+        return res.status(500).json({ error: `Failed to reach webhook: ${e.message}` });
+    }
+});
+
+// GET /api/whatsapp/ai-agent-logs
+app.get('/api/whatsapp/ai-agent-logs', requireAuth, async (req, res): Promise<any> => {
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
+    const userId = req.user.id;
+
+    const { data, error } = await supabaseAdmin
+        .from('ai_activity_logs')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ data });
+});
+
+// PATCH /api/whatsapp/human-takeover
+app.patch('/api/whatsapp/human-takeover', requireAuth, async (req, res): Promise<any> => {
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
+    const userId = req.user.id;
+    const { lead_phone, paused } = req.body;
+
+    if (!lead_phone) return res.status(400).json({ error: 'Missing lead_phone' });
+
+    // Update both whatsapp_contacts and leads table
+    await supabaseAdmin
+        .from('whatsapp_contacts')
+        .update({ ai_paused: paused })
+        .eq('user_id', userId)
+        .eq('lead_phone', lead_phone);
+
+    const { error } = await supabaseAdmin
+        .from('leads')
+        .update({ ai_paused: paused })
+        .eq('user_id', userId)
+        .eq('whatsapp_number', lead_phone);
+
+    return res.json({ success: true, ai_paused: paused });
+});
+
 // PATCH /api/whatsapp/auto-reply-config — configure automated basic replies (upsert so first save works)
 app.patch('/api/whatsapp/auto-reply-config', requireAuth, async (req, res): Promise<any> => {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
@@ -219,6 +333,51 @@ app.patch('/api/whatsapp/auto-reply-config', requireAuth, async (req, res): Prom
     if (error) return res.status(500).json({ error: error.message });
     return res.json({ success: true, auto_reply_enabled: enabled, auto_reply_text: text });
 });
+
+// POST /api/n8n/send — n8n-specific endpoint using API key auth (no JWT required)
+app.post('/api/n8n/send', async (req, res): Promise<any> => {
+    console.log("==> Hit /api/n8n/send");
+    try {
+        const apiKey = req.headers['x-api-key'] || req.body.apiKey;
+        const expectedKey = process.env.N8N_API_KEY || 'salesai_n8n_secret_key_2024';
+
+        if (!apiKey || apiKey !== expectedKey) {
+            console.warn("[n8n Send] Unauthorized request — invalid or missing API key");
+            return res.status(401).json({ error: 'Unauthorized: invalid API key' });
+        }
+
+        const { userId, to, message, contact_name } = req.body;
+
+        // Detailed logging to debug delivery issues
+        console.log(`[n8n Send] ============ INCOMING REQUEST ============`);
+        console.log(`[n8n Send] userId: ${userId}`);
+        console.log(`[n8n Send] to: ${to}`);
+        console.log(`[n8n Send] message: ${message?.substring(0, 100)}`);
+        console.log(`[n8n Send] contact_name: ${contact_name}`);
+
+        if (!userId) return res.status(400).json({ error: 'Missing `userId` in body.' });
+        if (!to || !message) return res.status(400).json({ error: 'Missing `to` or `message`.' });
+
+        // Check if WhatsApp socket is active for this user
+        const isConnected = waManager.activeSockets.has(userId);
+        console.log(`[n8n Send] WhatsApp connected for userId ${userId}: ${isConnected}`);
+
+        const result = await waManager.sendMessage(userId, to, message, undefined, contact_name);
+        console.log("[n8n Send] Result:", JSON.stringify(result));
+
+        if (!result.success) {
+            console.error(`[n8n Send] FAILED: ${result.error}`);
+            return res.status(500).json({ error: result.error });
+        }
+
+        console.log(`[n8n Send] SUCCESS: messageId=${result.messageId}`);
+        return res.json({ success: true, messageId: result.messageId });
+    } catch (e: any) {
+        console.error("CRITICAL EXCEPTION IN /api/n8n/send:", e);
+        return res.status(500).json({ error: e.message || 'Internal Server Error' });
+    }
+});
+
 
 // POST /api/whatsapp/send — send a text message via active Baileys session
 app.post('/api/whatsapp/send', requireAuth, async (req, res): Promise<any> => {

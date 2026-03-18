@@ -262,6 +262,11 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
     const [isLoadingConversations, setIsLoadingConversations] = useState(true);
     const [hasMoreMessages, setHasMoreMessages] = useState(true);
     const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
+    
+    // AI / n8n tracking
+    const [isAiAgentEnabled, setIsAiAgentEnabled] = useState(false);
+    const [aiPausedMap, setAiPausedMap] = useState<Record<string, boolean>>({});
+    
     // UI state
     const [showTemplates, setShowTemplates] = useState(false);
     const [showEmoji, setShowEmoji] = useState(false);
@@ -300,9 +305,12 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
 
     const getContactLead = (phone: string) => leads.find(l => l.phone?.replace(/\D/g, '') === phone);
 
-    // ── 1. Check WA connection status (initial + periodic so "WhatsApp offline" clears after connecting) ──
+    // ── 1. Check WA connection status & basic credentials (initial + periodic) ──
     useEffect(() => {
-        const check = () => getWhatsAppCredentials(session.token).then(creds => setIsWaConnected(!!creds?.is_connected));
+        const check = () => getWhatsAppCredentials(session.token).then(creds => {
+            setIsWaConnected(!!creds?.is_connected);
+            setIsAiAgentEnabled(!!creds?.ai_agent_enabled);
+        });
         check();
         const interval = setInterval(check, 12000);
         return () => clearInterval(interval);
@@ -326,6 +334,22 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                 isFetchingRef.current = false;
                 return;
             }
+            
+            // Simultaneously fetch all AI paused statuses for contacts
+            let aiPauseDict: Record<string, boolean> = {};
+            try {
+                const { data: contactData } = await supabase.from('whatsapp_contacts')
+                    .select('jid, lead_phone, ai_paused')
+                    .eq('user_id', session.user.id);
+                if (contactData) {
+                    contactData.forEach(c => {
+                        if (c.jid) aiPauseDict[c.jid] = !!c.ai_paused;
+                        if (c.lead_phone) aiPauseDict[c.lead_phone] = !!c.ai_paused;
+                    });
+                }
+            } catch (err) { }
+            
+            setAiPausedMap(aiPauseDict);
 
             const convs: WaConversation[] = data.map((m: any) => {
                 const group = m.is_group === true || isGroupPhone(m.jid || m.lead_phone);
@@ -365,6 +389,7 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
         setIsLoadingStatus(true);
         getWhatsAppCredentials(session.token).then(creds => {
             if (creds?.is_connected) setIsWaConnected(true);
+            if (creds?.ai_agent_enabled) setIsAiAgentEnabled(true);
         }).finally(() => setIsLoadingStatus(false));
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -644,7 +669,12 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
         try {
             setIsSending(true);
             const result = await sendWhatsAppTextMessage(session.token, selectedJid, textToSend, quotedId, selectedConversation.name);
-            if (!result.success) setError(`Error: ${result.message || 'Message not sent'}`);
+            if (!result.success) {
+                setError(`Error: ${result.message || 'Message not sent'}`);
+            } else {
+                // If it succeeds, auto-pause AI for this lead mapping manually on frontend too just in case
+                setAiPausedMap(prev => ({ ...prev, [selectedJid]: true, [selectedConversation.phone]: true }));
+            }
         } catch (e: any) {
             setError(`Failed: ${e.message}`);
         } finally {
@@ -657,8 +687,14 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
         setIsSending(true);
         try {
             const result = await sendWhatsAppMedia(session.token, selectedJid, mediaPreview.file, inputText || undefined, selectedConversation?.name);
-            if (!result.success) setError(result.error || 'Media not sent');
-            else { setInputText(''); setMediaPreview(null); }
+            if (!result.success) {
+                setError(result.error || 'Media not sent');
+            } else { 
+                setInputText(''); 
+                setMediaPreview(null); 
+                // Auto-pause mapping
+                setAiPausedMap(prev => ({ ...prev, [selectedJid]: true, [selectedConversation.phone]: true }));
+            }
         } catch (e: any) {
             setError(e.message);
         } finally {
@@ -727,6 +763,31 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                 }));
                 setMessages(dedupeMessages(list));
             });
+        }
+    };
+
+    const handleToggleHumanTakeover = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!selectedConversation) return;
+
+        const currentPaused = !!aiPausedMap[selectedJid] || !!aiPausedMap[selectedConversation.phone];
+        const targetPaused = !currentPaused;
+
+        // Optimistic UI update
+        setAiPausedMap(prev => ({ ...prev, [selectedJid]: targetPaused, [selectedConversation.phone]: targetPaused }));
+
+        try {
+            const { setHumanTakeover } = await import('../../services/whatsappService');
+            const res = await setHumanTakeover(session.token, selectedConversation.phone, targetPaused);
+            if (!res.success) {
+                setError(res.error || 'Failed to update AI state.');
+                // Revert
+                setAiPausedMap(prev => ({ ...prev, [selectedJid]: currentPaused, [selectedConversation.phone]: currentPaused }));
+            }
+        } catch (err: any) {
+            setError(err.message || 'Failed to update AI state.');
+            // Revert
+            setAiPausedMap(prev => ({ ...prev, [selectedJid]: currentPaused, [selectedConversation.phone]: currentPaused }));
         }
     };
 
@@ -862,7 +923,27 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                                 </div>
                             </div>
                         </div>
-                        <div className="flex gap-[2px] text-[#aebac1]">
+
+                        <div className="flex gap-3 items-center text-[#aebac1]">
+                            {/* n8n Status Badge / Takeover Button */}
+                            {isAiAgentEnabled && !selectedConversation.isGroup && (
+                                <button
+                                    onClick={handleToggleHumanTakeover}
+                                    title={aiPausedMap[selectedJid] || aiPausedMap[selectedConversation.phone] ? "Resume AI handling" : "Pause AI handling (Human Takeover)"}
+                                    className={`px-3 py-1 text-xs font-bold rounded-full border cursor-pointer hover:opacity-80 transition-all flex items-center gap-1.5 ${
+                                        aiPausedMap[selectedJid] || aiPausedMap[selectedConversation.phone]
+                                            ? 'bg-[#2a3942] border-[#aebac1] text-[#aebac1]'
+                                            : 'bg-[#e7f8f2] border-[#00a884] text-[#00a884]'
+                                    }`}
+                                >
+                                    {aiPausedMap[selectedJid] || aiPausedMap[selectedConversation.phone] ? (
+                                        <><AlertCircle size={12} /> AI Paused</>
+                                    ) : (
+                                        <><Sparkles size={12} /> n8n Handing</>
+                                    )}
+                                </button>
+                            )}
+
                             <button title="Search" className="bg-transparent border-none cursor-pointer text-[#aebac1] rounded-full p-2 hover:bg-[#2a3942]"><Search size={20} /></button>
                             <button title="Contact info" onClick={() => setShowContactPanel(p => !p)} className={`bg-transparent border-none cursor-pointer rounded-full p-2 hover:bg-[#2a3942] ${showContactPanel ? 'text-[#00a884]' : 'text-[#aebac1]'}`}><Info size={20} /></button>
                             <button title="More" className="bg-transparent border-none cursor-pointer text-[#aebac1] rounded-full p-2 hover:bg-[#2a3942]"><MoreVertical size={20} /></button>
