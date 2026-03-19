@@ -505,7 +505,7 @@ export class WhatsAppConnectionManager {
             return;
         }
 
-        const isGroup = remoteJid.includes('@g.us');
+        const isGroup = remoteJid.includes('@g.us') || remoteJid.includes('@newsletter') || remoteJid.includes('@broadcast');
         let leadPhone = jidToLeadPhone(remoteJid);
 
         const sock = this.activeSockets.get(userId);
@@ -925,13 +925,13 @@ export class WhatsAppConnectionManager {
     }
 
     // ── Send text message ───────────────────────────────────────────
-    public async sendMessage(userId: string, to: string, text: string, quotedMsgId?: string, contactNameFromBody?: string): Promise<{ success: boolean; error?: string; messageId?: string }> {
+    public async sendMessage(userId: string, to: string, text: string, quotedMsgId?: string, contactNameFromBody?: string, senderType: 'user' | 'ai' = 'user'): Promise<{ success: boolean; error?: string; messageId?: string }> {
         // Calling directly for reliability instead of queueing to avoid Redis timeout errors on Windows.
-        return await this.sendMessageRaw(userId, to, text, quotedMsgId, contactNameFromBody);
+        return await this.sendMessageRaw(userId, to, text, quotedMsgId, contactNameFromBody, senderType);
     }
 
     /** The actual Baileys send logic called by the worker */
-    public async sendMessageRaw(userId: string, to: string, text: string, quotedMsgId?: string, contactNameFromBody?: string): Promise<{ success: boolean; error?: string; messageId?: string }> {
+    public async sendMessageRaw(userId: string, to: string, text: string, quotedMsgId?: string, contactNameFromBody?: string, senderType: 'user' | 'ai' = 'user'): Promise<{ success: boolean; error?: string; messageId?: string }> {
         const sock = this.activeSockets.get(userId);
         if (!sock) return { success: false, error: 'WhatsApp not connected.' };
 
@@ -952,6 +952,8 @@ export class WhatsAppConnectionManager {
                 jid = preferred.jid;
             } else if (to.includes('@')) {
                 jid = to;
+            } else if (list.length > 0 && list[0]?.jid) {
+                jid = list[0].jid;
             } else if (toForLookup.length >= 7) {
                 jid = `${toForLookup}@s.whatsapp.net`;
             } else {
@@ -971,6 +973,12 @@ export class WhatsAppConnectionManager {
         if (jid.includes('@newsletter')) {
             console.warn(`[WhatsAppConnectionManager] Blocked send to newsletter: ${jid}`);
             return { success: false, error: 'Cannot send messages to Newsletters/Channels. They are read-only.' };
+        }
+
+        // Prevent AI from sending to groups
+        if (senderType === 'ai' && jid.includes('@g.us')) {
+            console.warn(`[WhatsAppConnectionManager] Blocked AI from sending to group: ${jid}`);
+            return { success: false, error: 'AI agent is not permitted to send messages to groups.' };
         }
 
         try {
@@ -1005,7 +1013,7 @@ export class WhatsAppConnectionManager {
                         lead_phone: leadPhone,
                         jid: jid,
                         content: text,
-                        sender: 'user',
+                        sender: senderType,
                         message_id: messageId,
                         status: 'sent',
                         is_group: jid.includes('@g.us'),
@@ -1017,7 +1025,7 @@ export class WhatsAppConnectionManager {
                         lead_phone: leadPhone,
                         jid: jid,
                         content: text,
-                        sender: 'user',
+                        sender: senderType,
                         message_id: messageId,
                         timestamp: new Date().toISOString(),
                         status: 'sent',
@@ -1026,7 +1034,7 @@ export class WhatsAppConnectionManager {
                     
                     // ── Auto-Pause AI (Human Takeover) ───────────────────
                     // If the user manually sends a message, pause the AI for this lead
-                    if (supabaseAdmin) {
+                    if (senderType === 'user' && supabaseAdmin) {
                         try {
                             await supabaseAdmin.from('whatsapp_contacts').update({ ai_paused: true })
                                 .eq('user_id', userId).eq('lead_phone', leadPhone);
@@ -1106,13 +1114,13 @@ export class WhatsAppConnectionManager {
     }
 
     // ── Send media ──────────────────────────────────────────────────
-    public async sendMedia(userId: string, to: string, buffer: Buffer, mimetype: string, caption?: string, filename?: string, contactNameFromBody?: string): Promise<{ success: boolean; error?: string; messageId?: string }> {
+    public async sendMedia(userId: string, to: string, buffer: Buffer, mimetype: string, caption?: string, filename?: string, contactNameFromBody?: string, senderType: 'user' | 'ai' = 'user'): Promise<{ success: boolean; error?: string; messageId?: string }> {
         // Calling directly for reliability instead of queueing to avoid Redis timeout errors on Windows.
-        return await this.sendMediaRaw(userId, to, buffer, mimetype, caption, filename, contactNameFromBody);
+        return await this.sendMediaRaw(userId, to, buffer, mimetype, caption, filename, contactNameFromBody, senderType);
     }
 
     /** The actual Baileys media logic called by the worker */
-    public async sendMediaRaw(userId: string, to: string, buffer: Buffer, mimetype: string, caption?: string, filename?: string, contactNameFromBody?: string): Promise<{ success: boolean; error?: string; messageId?: string }> {
+    public async sendMediaRaw(userId: string, to: string, buffer: Buffer, mimetype: string, caption?: string, filename?: string, contactNameFromBody?: string, senderType: 'user' | 'ai' = 'user'): Promise<{ success: boolean; error?: string; messageId?: string }> {
         const sock = this.activeSockets.get(userId);
         if (!sock) return { success: false, error: 'WhatsApp not connected.' };
 
@@ -1133,6 +1141,8 @@ export class WhatsAppConnectionManager {
                 jid = preferred.jid;
             } else if (to.includes('@')) {
                 jid = to;
+            } else if (list.length > 0 && list[0]?.jid) {
+                jid = list[0].jid;
             } else if (toForLookup.length >= 7) {
                 jid = `${toForLookup}@s.whatsapp.net`;
             } else {
@@ -1146,6 +1156,12 @@ export class WhatsAppConnectionManager {
         const sendable = await this.ensureSendableJid(sock, jid, userId);
         if ('error' in sendable) return { success: false, error: sendable.error };
         jid = sendable.jid;
+
+        // Prevent AI from sending to groups
+        if (senderType === 'ai' && jid.includes('@g.us')) {
+            console.warn(`[WhatsAppConnectionManager] Blocked AI from sending media to group: ${jid}`);
+            return { success: false, error: 'AI agent is not permitted to send messages to groups.' };
+        }
 
         let msgContent: any;
         if (mimetype.startsWith('image/')) {
@@ -1210,7 +1226,7 @@ export class WhatsAppConnectionManager {
                         lead_phone: leadPhone,
                         jid: jid,
                         content,
-                        sender: 'user',
+                        sender: senderType,
                         message_id: messageId,
                         status: 'sent',
                         is_group: jid.includes('@g.us'),
@@ -1222,7 +1238,7 @@ export class WhatsAppConnectionManager {
                         lead_phone: leadPhone,
                         jid: jid,
                         content,
-                        sender: 'user',
+                        sender: senderType,
                         message_id: messageId,
                         timestamp: new Date().toISOString(),
                         status: 'sent',

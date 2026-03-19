@@ -401,6 +401,7 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                 setConversations(prev => {
                     const rowJid = m.jid || m.lead_phone;
                     const idx = prev.findIndex(c => (c.jid === rowJid) || (c.phone === m.lead_phone));
+                    if (idx < 0) return prev; // Only show existing whatsapp_contacts
                     const existingName = idx >= 0 ? prev[idx].name : '';
                     const bestName = getContactName(m.lead_phone, m.contact_name) || existingName || formatPhoneDisplay(m.lead_phone);
                     const group = m.is_group === true || isGroupPhone(m.lead_phone);
@@ -423,10 +424,14 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
 
                 // Match current chat by both jid and lead_phone so messages show whether user selected by full JID or phone
                 const sel = String(selectedJidRef.current);
-                const isForCurrent =
-                    (m.jid != null && String(m.jid) === sel) ||
-                    (m.lead_phone != null && String(m.lead_phone) === sel) ||
-                    (m.lead_phone != null && String(m.lead_phone) + '@lid' === sel);
+                const cleanSel = sel.replace(/@.*$/, '');
+                const cleanMsgPhone = (m.lead_phone || '').replace(/@.*$/, '');
+                const cleanMsgJid = (m.jid || '').replace(/@.*$/, '');
+                
+                const isForCurrent = 
+                    (cleanMsgPhone && cleanMsgPhone === cleanSel) || 
+                    (cleanMsgJid && cleanMsgJid === cleanSel) || 
+                    (m.jid != null && String(m.jid) === sel);
 
                 if (isForCurrent) {
                     setMessages(prev => {
@@ -525,6 +530,7 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                     const rowJid = m.jid || m.lead_phone;
                     setConversations(prev => {
                         const idx = prev.findIndex(c => c.jid === rowJid || c.phone === m.lead_phone);
+                        if (idx < 0) return prev; // Only show existing whatsapp_contacts
                         const existingName = idx >= 0 ? prev[idx].name : '';
                         const updated: WaConversation = {
                             phone: m.lead_phone,

@@ -362,7 +362,7 @@ app.post('/api/n8n/send', async (req, res): Promise<any> => {
         const isConnected = waManager.activeSockets.has(userId);
         console.log(`[n8n Send] WhatsApp connected for userId ${userId}: ${isConnected}`);
 
-        const result = await waManager.sendMessage(userId, to, message, undefined, contact_name);
+        const result = await waManager.sendMessage(userId, to, message, undefined, contact_name, 'ai');
         console.log("[n8n Send] Result:", JSON.stringify(result));
 
         if (!result.success) {
@@ -425,41 +425,66 @@ app.post('/api/whatsapp/send-media', requireAuth, upload.single('file'), async (
 
 /**
  * GET /api/whatsapp/chats
- * Returns a list of the most recent message per conversation (grouped by JID)
+ * Returns a list of the user's whatsapp_contacts, optionally attaching the latest message for each.
+ * This fulfills the requirement to only show items from whatsapp_contacts in the inbox.
  */
 app.get('/api/whatsapp/chats', requireAuth, async (req, res): Promise<any> => {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
 
     const userId = req.user.id;
+
     try {
-        // We use a custom query to get the latest message for each JID
-        const { data, error } = await supabaseAdmin.rpc('get_recent_whatsapp_chats', {
-            p_user_id: userId
+        // 1. Fetch all contacts from whatsapp_contacts
+        const { data: contacts, error: contactsError } = await supabaseAdmin
+            .from('whatsapp_contacts')
+            .select('*')
+            .eq('user_id', userId);
+
+        if (contactsError) throw contactsError;
+
+        // 2. Fetch messages to get the latest message for each contact
+        const { data: messages, error: msgError } = await supabaseAdmin
+            .from('whatsapp_messages')
+            .select('lead_phone, jid, content, timestamp, sender')
+            .eq('user_id', userId)
+            .order('timestamp', { ascending: false })
+            .order('id', { ascending: false })
+            .limit(2000); // Fetch enough recent messages to cover most chats
+
+        if (msgError) throw msgError;
+
+        const latestMessages = new Map();
+        (messages || []).forEach(msg => {
+            const jid = msg.jid || msg.lead_phone;
+            if (jid && !latestMessages.has(jid)) {
+                latestMessages.set(jid, msg);
+            }
+            if (msg.lead_phone && !latestMessages.has(msg.lead_phone)) {
+                latestMessages.set(msg.lead_phone, msg);
+            }
         });
 
-        if (error) {
-            // Fallback if RPC doesn't exist: simple grouping
-            console.warn("[API] get_recent_whatsapp_chats RPC failed, using fallback grouping:", error.message);
-            const { data: fallback, error: fallbackErr } = await supabaseAdmin
-                .from('whatsapp_messages')
-                .select('*')
-                .eq('user_id', userId)
-                .order('timestamp', { ascending: false })
-                .order('id', { ascending: false });
+        // 3. Map contacts to the inbox format
+        const chats = (contacts || []).map(contact => {
+            const jid = contact.jid || contact.lead_phone;
+            const msg = latestMessages.get(jid) || latestMessages.get(contact.lead_phone);
+            
+            return {
+                jid: jid,
+                lead_phone: contact.lead_phone,
+                contact_name: contact.contact_name,
+                profile_picture_url: contact.profile_picture_url,
+                is_group: contact.is_group ?? false,
+                last_message: msg ? msg.content : '',
+                last_timestamp: msg ? msg.timestamp : contact.created_at,
+                last_sender: msg ? msg.sender : '',
+            };
+        });
 
-            if (fallbackErr) throw fallbackErr;
+        // Sort by last_timestamp descending
+        chats.sort((a, b) => new Date(b.last_timestamp).getTime() - new Date(a.last_timestamp).getTime());
 
-            // Manual deduplication by JID
-            const uniqueChatsMap = new Map();
-            (fallback || []).forEach(msg => {
-                if (!uniqueChatsMap.has(msg.jid)) {
-                    uniqueChatsMap.set(msg.jid, msg);
-                }
-            });
-            return res.json({ data: Array.from(uniqueChatsMap.values()) });
-        }
-
-        return res.json({ data });
+        return res.json({ data: chats });
     } catch (err: any) {
         console.error('[API] Error fetching chats:', err);
         return res.status(500).json({ error: err.message });
@@ -603,65 +628,7 @@ app.put('/api/activities/:id/decline', requireAuth, async (req, res): Promise<an
     return res.json({ success: true, data: activity });
 });
 
-// Fetch chats list with contact metadata (for Inbox)
-app.get('/api/whatsapp/chats', requireAuth, async (req, res): Promise<any> => {
-    if (!supabaseAdmin) return res.status(500).json({ error: 'Server not configured.' });
 
-    const userId = req.user.id;
-
-    const { data: messages, error: msgError } = await supabaseAdmin
-        .from('whatsapp_messages')
-        .select('lead_phone, jid, content, timestamp, sender, contact_name, is_group')
-        .eq('user_id', userId)
-        .order('timestamp', { ascending: false })
-        .order('id', { ascending: false })
-        .limit(1000);
-
-    if (msgError) return res.status(500).json({ error: msgError.message });
-
-    const { data: contacts } = await supabaseAdmin
-        ?.from('whatsapp_contacts')
-        .select('lead_phone, jid, contact_name, profile_picture_url, is_group')
-        .eq('user_id', userId) || { data: [] };
-
-    const contactMap = new Map((contacts || []).map((c: any) => [c.lead_phone, c]));
-
-    const seen = new Set<string>();
-
-    // First pass to discover the best non-empty / non-phone contact_name for each JID
-    const bestNameMap = new Map<string, string>();
-    for (const m of messages || []) {
-        const rowJid = m.jid || m.lead_phone;
-        const currentBest = bestNameMap.get(rowJid);
-        if (!currentBest || currentBest === m.lead_phone || currentBest === m.jid) {
-            if (m.contact_name && m.contact_name !== m.lead_phone && m.contact_name !== m.jid) {
-                bestNameMap.set(rowJid, m.contact_name);
-            }
-        }
-    }
-
-    const chats: any[] = [];
-    for (const m of messages || []) {
-        const rowJid = m.jid || m.lead_phone;
-        if (seen.has(rowJid)) continue;
-        seen.add(rowJid);
-        const meta = contactMap.get(m.lead_phone);
-
-        let finalContactName = meta?.contact_name || bestNameMap.get(rowJid) || m.contact_name;
-
-        chats.push({
-            jid: rowJid,
-            lead_phone: m.lead_phone,
-            contact_name: finalContactName,
-            profile_picture_url: meta?.profile_picture_url,
-            is_group: m.is_group ?? meta?.is_group ?? false,
-            last_message: m.content,
-            last_timestamp: m.timestamp,
-            last_sender: m.sender,
-        });
-    }
-    return res.json({ data: chats });
-});
 
 // Normalize JID for message-history lookups.
 // @g.us → keep. @s.whatsapp.net → keep. @lid → keep (never blindly convert).
@@ -682,6 +649,7 @@ app.get('/api/whatsapp/messages/:identifier', requireAuth, async (req, res): Pro
 
     const userId = req.user.id;
     const identifier = decodeURIComponent(String(req.params.identifier ?? ''));
+    const rawPhone = identifier.replace(/@.*$/, ''); // Extract bare phone number
 
     // Attempt to normalize if it looks like a phone number but doesn't have suffix
     const normalizedIdentifier = identifier.includes('@') ? identifier : normalizeJid(identifier);
@@ -694,7 +662,7 @@ app.get('/api/whatsapp/messages/:identifier', requireAuth, async (req, res): Pro
         .from('whatsapp_messages')
         .select('*')
         .eq('user_id', userId)
-        .or(`jid.eq.${normalizedIdentifier},lead_phone.eq.${identifier},jid.eq.${identifier}`);
+        .or(`jid.eq.${normalizedIdentifier},lead_phone.eq.${rawPhone},jid.eq.${identifier}`);
 
     if (cursor) {
         query = query.lt('timestamp', cursor);

@@ -92,10 +92,6 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
     };
 
     const openAiAgentModal = () => {
-        if (!isWhatsAppConnected) {
-            setWhatsAppModalOpen(true);
-            return;
-        }
         setAiAgentError('');
         setTestResult(null);
         setAiAgentModalOpen(true);
@@ -151,10 +147,6 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
     };
 
     const openAutoReplyModal = () => {
-        if (!isWhatsAppConnected) {
-            setWhatsAppModalOpen(true);
-            return;
-        }
         setAutoReplyError('');
         setAutoReplyModalOpen(true);
     };
