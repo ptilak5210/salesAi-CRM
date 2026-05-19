@@ -1,26 +1,48 @@
-# Logs
-logs
+# Logs & debug files
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
+backend_crash_log.txt
+vite_output*.txt
+*.txt
 
-node_modules
-dist
-dist-ssr
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
 *.local
+
+# Environment variables (NEVER commit these)
 .env
 .env.*
+!.env.example
+
+# WhatsApp Baileys session files (contain auth tokens)
+auth_info_baileys/
+backend/whatsapp/auth_info_baileys/
+**/auth_info_baileys/
+*.session
+*.json.bak
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# Temp / scratch files
+*.local
+*.tmp
+jid_fix.txt
+backend/whatsapp/jid_fix.txt

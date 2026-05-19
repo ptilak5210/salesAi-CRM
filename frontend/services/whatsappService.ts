@@ -7,10 +7,10 @@ const API_BASE = 'http://localhost:3001';
 // Singleton socket instance
 let socket: Socket | null = null;
 
-// Helper to ALWAYS get the freshest token to avoid 401s from stale React state closures
 const getFreshToken = async (fallbackToken?: string) => {
-    const { data } = await supabase.auth.getSession();
-    return data?.session?.access_token || fallbackToken || '';
+    // Return the fallbackToken (which is React's session.token) directly.
+    // Calling getSession() here can cause indefinite hangs due to a known Supabase storage lock issue.
+    return fallbackToken || '';
 };
 
 // ── Socket for QR auth (ConnectWhatsAppModal) ─────────────────────────────────
@@ -318,6 +318,22 @@ export const sendWhatsAppTextMessage = async (token: string, to: string, message
         return { success: res.ok, message: errMsg, messageId: data.messageId };
     } catch (e: any) {
         return { success: false, message: e.message || 'Network error' };
+    }
+};
+
+// ── Send button/interactive message ───────────────────────────────────────────
+export const sendWhatsAppButtons = async (token: string, to: string, bodyText: string, buttons: { id: string, text: string }[], contactName?: string): Promise<{ success: boolean; error?: string; messageId?: string }> => {
+    try {
+        const freshToken = await getFreshToken(token);
+        const res = await fetch(`${API_BASE}/api/whatsapp/send-buttons`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${freshToken}` },
+            body: JSON.stringify({ to, bodyText, buttons, contact_name: contactName })
+        });
+        const data = await res.json();
+        return { success: res.ok, error: data.error, messageId: data.messageId };
+    } catch (e: any) {
+        return { success: false, error: e.message || 'Network error' };
     }
 };
 

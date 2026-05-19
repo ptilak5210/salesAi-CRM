@@ -1,0 +1,1392 @@
+{
+  "name": "SalesAI CRM - Perfect Flow v2",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "options": {}
+      },
+      "id": "9f08c640-e7f7-47dd-94f5-40047a574b7f",
+      "name": "Receive Lead (WhatsApp)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1500,
+        1000
+      ],
+      "webhookId": "7ff0afd2-09ff-4d30-850d-adf354f323a8"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "name",
+              "value": "={{ $json.body.name || $json.body.contact_name || 'Unknown' }}",
+              "type": "string"
+            },
+            {
+              "id": "2",
+              "name": "phone",
+              "value": "={{ $json.body.from || $json.body.phone || $json.body.lead_phone || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "3",
+              "name": "email",
+              "value": "={{ $json.body.email || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "4",
+              "name": "source",
+              "value": "={{ $json.body.source || 'whatsapp' }}",
+              "type": "string"
+            },
+            {
+              "id": "5",
+              "name": "message",
+              "value": "={{ $json.body.message || $json.body.content || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "6",
+              "name": "buttonId",
+              "value": "={{ $json.body.selectedButtonId || $json.body.buttonId || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "7",
+              "name": "followup_step",
+              "value": "={{ $json.body.followup_step || 0 }}",
+              "type": "string"
+            },
+            {
+              "id": "8",
+              "name": "userId",
+              "value": "={{ $json.body.userId || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "9",
+              "name": "timestamp",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8ac7b325-cf12-4ce4-9dbc-022866900064",
+      "name": "Extract Lead Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1250,
+        1000
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.buttonId }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEmpty"
+                    },
+                    "id": "btn-check-cond"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Button Press"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.followup_step }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEmpty"
+                    },
+                    "id": "followup-check-nonempty"
+                  },
+                  {
+                    "leftValue": "={{ $json.followup_step }}",
+                    "rightValue": "0",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEquals"
+                    },
+                    "id": "followup-check-notzero"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Follow-Up Trigger"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.buttonId }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "isEmpty"
+                    },
+                    "id": "default-btn-check"
+                  },
+                  {
+                    "leftValue": "={{ $json.followup_step || '0' }}",
+                    "rightValue": "0",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "default-follow-check"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Normal Chat"
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "switch-is-button-or-followup",
+      "name": "Is Button or Follow-Up?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -1000,
+        1000
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.buttonId }}",
+                    "rightValue": "btn_services",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "btn-serv"
+                  },
+                  {
+                    "leftValue": "={{ $json.message }}",
+                    "rightValue": "1",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "num-serv"
+                  },
+                  {
+                    "leftValue": "={{ $json.message }}",
+                    "rightValue": "services",
+                    "operator": {
+                      "type": "string",
+                      "operation": "contains"
+                    },
+                    "id": "txt-serv"
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Services"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.buttonId }}",
+                    "rightValue": "btn_pricing",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "btn-pric"
+                  },
+                  {
+                    "leftValue": "={{ $json.message }}",
+                    "rightValue": "2",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "num-pric"
+                  },
+                  {
+                    "leftValue": "={{ $json.message }}",
+                    "rightValue": "pricing",
+                    "operator": {
+                      "type": "string",
+                      "operation": "contains"
+                    },
+                    "id": "txt-pric"
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Pricing"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.buttonId }}",
+                    "rightValue": "btn_demo",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "btn-dem"
+                  },
+                  {
+                    "leftValue": "={{ $json.message }}",
+                    "rightValue": "3",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "num-dem"
+                  },
+                  {
+                    "leftValue": "={{ $json.message }}",
+                    "rightValue": "demo",
+                    "operator": {
+                      "type": "string",
+                      "operation": "contains"
+                    },
+                    "id": "txt-dem"
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Demo/Meeting"
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "switch-button-actions",
+      "name": "Route Button Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -700,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://arrased-haemocytoblastic-foster.ngrok-free.dev/api/n8n/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"userId\": \"{{ $('Extract Lead Data').item.json.userId }}\",\n  \"to\": \"{{ $('Extract Lead Data').item.json.phone }}\",\n  \"message\": \"📦 *Hamari Services:*\n\n1. *CRM Software:* Lead tracking, automated routing & sales pipelines.\n2. *WhatsApp Automation:* Broadcast, chatbots & auto-replies.\n3. *Workflow Integration:* n8n API integrations & custom apps.\"\n}",
+        "options": {}
+      },
+      "id": "send-services-info",
+      "name": "Send Services Info (WhatsApp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -400,
+        600
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yY2UzOwXSYBxELJc",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://arrased-haemocytoblastic-foster.ngrok-free.dev/api/n8n/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"userId\": \"{{ $('Extract Lead Data').item.json.userId }}\",\n  \"to\": \"{{ $('Extract Lead Data').item.json.phone }}\",\n  \"message\": \"💰 *Pricing Plans:*\n\n• *Starter:* ₹2,999/month (Basic CRM + 1 WhatsApp connection)\n• *Growth:* ₹5,999/month (Full CRM + Automation + 2 Channels)\n• *Enterprise:* Custom pricing (Dedicated setup + Multi-agent inbox)\"\n}",
+        "options": {}
+      },
+      "id": "send-pricing-info",
+      "name": "Send Pricing Info (WhatsApp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -400,
+        800
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yY2UzOwXSYBxELJc",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a Sales AI Assistant for a CRM company.\n\nYour job:\n- Talk with leads on WhatsApp\n- Qualify them\n- Keep replies short and sales-focused\n\nRules:\n- Reply in same language as user (Hindi/English/Hinglish)\n- Only talk about services: CRM, WhatsApp Marketing, Automation\n- Keep answers SHORT (1-2 sentences max)\n- Be polite and professional\n- Ask ONE question at a time\n- If user asks unrelated questions, politely redirect to services\n\nUser Message:\n{{ $json.message }}\n\nProvide ONLY plain text message.\nDo NOT return JSON.",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a focused sales assistant. Only discuss: CRM, WhatsApp Marketing, Automation. Always match the user's language. Keep responses short. Return plain text only, no JSON."
+        }
+      },
+      "id": "35d37fff-74ce-4249-8999-426fc54dcc0c",
+      "name": "AI Lead Qualification Agent1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -700,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Extract Lead Data').item.json.phone }}",
+        "contextWindowLength": 20
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -600,
+        1400
+      ],
+      "id": "a553eadb-86f9-436a-b750-10de80409ba3",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-4o-mini"
+        },
+        "builtInTools": {},
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "b1eb15d2-64ea-4af8-ac00-2b129a03b2d3",
+      "name": "OpenAI GPT-4",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -750,
+        1400
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "yTSobXzMR0h6RM7p",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"reply\": \"Hi! Thanks for reaching out. What brings you to SalesAI today?\",\n  \"decision\": \"continue\",\n  \"lead_type\": \"warm\",\n  \"confidence_score\": 0.5,\n  \"follow_up_step\": 1,\n  \"summary\": \"Initial contact\"\n}",
+        "autoFix": true
+      },
+      "id": "e15e2145-693d-4b44-94ec-57a6f393da2e",
+      "name": "Structured Output Parser1",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        -480,
+        1400
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.output.decision }}",
+                    "rightValue": "continue",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "cond-continue"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "CONTINUE (Reply Sent)"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.output.decision }}",
+                    "rightValue": "qualify",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "cond-qualify"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "QUALIFY (Meeting)"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.output.decision }}",
+                    "rightValue": "follow_up",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "cond-followup"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "FOLLOW UP"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.output.decision }}",
+                    "rightValue": "negative",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "cond-negative"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "NEGATIVE"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c4655d32-3c27-454c-887b-0bba60c2e036",
+      "name": "Route by Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -200,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://arrased-haemocytoblastic-foster.ngrok-free.dev/api/n8n/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"userId\": \"{{ $('Extract Lead Data').item.json.userId }}\",\n  \"to\": \"{{ $('Extract Lead Data').item.json.phone }}\",\n  \"message\": \"{{ $('AI Lead Qualification Agent1').item.json.output.reply }}\"\n}",
+        "options": {}
+      },
+      "id": "50f847e7-9255-4564-95a1-e1f254b8c668",
+      "name": "Send AI Reply (WhatsApp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        150,
+        1000
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yY2UzOwXSYBxELJc",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://arrased-haemocytoblastic-foster.ngrok-free.dev/api/n8n/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"userId\": \"{{ $('Extract Lead Data').item.json.userId }}\",\n  \"to\": \"{{ $('Extract Lead Data').item.json.phone }}\",\n  \"message\": \"Please select an option to continue:\\n\\n1️⃣ *Hamari Services* (Type: Services)\\n2️⃣ *Pricing Plans* (Type: Pricing)\\n3️⃣ *Book a Demo* (Type: Demo)\"\n}",
+        "options": {}
+      },
+      "id": "send-options-menu",
+      "name": "Send Options Menu",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        1000
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yY2UzOwXSYBxELJc",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://arrased-haemocytoblastic-foster.ngrok-free.dev/api/n8n/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"userId\": \"{{ $('Extract Lead Data').item.json.userId }}\",\n  \"to\": \"{{ $('Extract Lead Data').item.json.phone }}\",\n  \"message\": \"Awesome! Let's schedule a short demo. Click below or reply to book.\"\n}",
+        "options": {}
+      },
+      "id": "aebb85b5-3b75-4470-bada-bc6ec9520697",
+      "name": "Send Meeting Confirmation (WhatsApp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        150,
+        1300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yY2UzOwXSYBxELJc",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://arrased-haemocytoblastic-foster.ngrok-free.dev/api/n8n/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"title\": \"Meeting with {{ $('Extract Lead Data').item.json.name }}\",\n  \"attendee\": \"{{ $('Extract Lead Data').item.json.phone }}\",\n  \"date\": \"{{ $now.plus(1, 'days').toFormat('yyyy-MM-dd') }}\",\n  \"time\": \"10:00 AM\",\n  \"type\": \"meeting\",\n  \"status\": \"confirmed\"\n}",
+        "options": {}
+      },
+      "id": "b7030793-338e-4faf-8536-576bcaac542c",
+      "name": "Book Meeting in CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        1300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yY2UzOwXSYBxELJc",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "11OH03WW_E6UDewY42HReR7QdB89RuB3H7jF4LHuAh2g",
+          "mode": "list",
+          "cachedResultName": "SalesAI CRM Leads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/11OH03WW_E6UDewY42HReR7QdB89RuB3H7jF4LHuAh2g/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Qualified_Leads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/11OH03WW_E6UDewY42HReR7QdB89RuB3H7jF4LHuAh2g/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "61d104d0-4da1-4139-91e6-9fdf99491292",
+      "name": "Log Qualified Lead (Sheet)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        650,
+        1300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "UJsnKRELmiMLRokU",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Extract Lead Data').item.json.followup_step }}",
+                    "rightValue": "follow_up",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "cond-f1-followup"
+                  },
+                  {
+                    "leftValue": "={{ $('Extract Lead Data').item.json.followup_step }}",
+                    "rightValue": "1",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "cond-f1-numeric"
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Day 1"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Extract Lead Data').item.json.followup_step }}",
+                    "rightValue": "3",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "cond-f3"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Day 3"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Extract Lead Data').item.json.followup_step }}",
+                    "rightValue": "7",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "cond-f7"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Day 7"
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "91a8c0e0-c835-48f2-b4f9-1997dec2a244",
+      "name": "Which Follow-Up Step?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -700,
+        1800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://arrased-haemocytoblastic-foster.ngrok-free.dev/api/n8n/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"userId\": \"{{ $('Extract Lead Data').item.json.userId }}\",\n  \"to\": \"{{ $('Extract Lead Data').item.json.phone }}\",\n  \"message\": \"Hey! Kal aapne query ki thi. Main aapki kaise madad kar sakta hoon? 😊\"\n}",
+        "options": {}
+      },
+      "id": "1836ec0b-bc2d-420b-8d92-3c949778f105",
+      "name": "Send Follow-Up Day 1 (WhatsApp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -400,
+        1700
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yY2UzOwXSYBxELJc",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 72,
+        "unit": "hours"
+      },
+      "id": "6438eb1d-0183-425a-9544-73f519bc8cab",
+      "name": "Wait 72 Hours (Day 1→3)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -150,
+        1700
+      ],
+      "webhookId": "83eee528-7dc8-4f4d-84a9-6c573aea3871"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://arrased-haemocytoblastic-foster.ngrok-free.dev/api/n8n/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"userId\": \"{{ $('Extract Lead Data').item.json.userId }}\",\n  \"to\": \"{{ $('Extract Lead Data').item.json.phone }}\",\n  \"message\": \"Hey! Still interested in our CRM? Let me know! 😊\"\n}",
+        "options": {}
+      },
+      "id": "5cb47e56-9fba-4a60-9b39-e2868168246d",
+      "name": "Send Follow-Up Day 3 (WhatsApp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -400,
+        1850
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yY2UzOwXSYBxELJc",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 96,
+        "unit": "hours"
+      },
+      "id": "e37d05d0-bd42-41b4-a858-7b2c92c8315f",
+      "name": "Wait 96 Hours (Day 3→7)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -150,
+        1850
+      ],
+      "webhookId": "5623e53e-1e61-4b59-bab2-97d65e4bb14d"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://arrased-haemocytoblastic-foster.ngrok-free.dev/api/n8n/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"userId\": \"{{ $('Extract Lead Data').item.json.userId }}\",\n  \"to\": \"{{ $('Extract Lead Data').item.json.phone }}\",\n  \"message\": \"Last reminder 🙂 Let me know if you want to book a demo!\"\n}",
+        "options": {}
+      },
+      "id": "06ae88ed-a944-4719-9662-7bd073bbd2d9",
+      "name": "Send Follow-Up Day 7 (WhatsApp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -400,
+        2000
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yY2UzOwXSYBxELJc",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "11OH03WW_E6UDewY42HReR7QdB89RuB3H7jF4LHuAh2g",
+          "mode": "list",
+          "cachedResultName": "SalesAI CRM Leads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/11OH03WW_E6UDewY42HReR7QdB89RuB3H7jF4LHuAh2g/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1324596621,
+          "mode": "list",
+          "cachedResultName": "Follow_Up_Queue",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/11OH03WW_E6UDewY42HReR7QdB89RuB3H7jF4LHuAh2g/edit#gid=1324596621"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "a5b6ef70-1926-4413-bd74-dcea6f023b03",
+      "name": "Log Follow-Up Lead (Sheet)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        150,
+        1600
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "UJsnKRELmiMLRokU",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "11OH03WW_E6UDewY42HReR7QdB89RuB3H7jF4LHuAh2g",
+          "mode": "list",
+          "cachedResultName": "SalesAI CRM Leads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/11OH03WW_E6UDewY42HReR7QdB89RuB3H7jF4LHuAh2g/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 368748542,
+          "mode": "list",
+          "cachedResultName": "Negative_Leads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/11OH03WW_E6UDewY42HReR7QdB89RuB3H7jF4LHuAh2g/edit#gid=368748542"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "phone"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "useAppend": true
+        }
+      },
+      "id": "a2faac9f-fa42-4d1b-8b20-c35ab7eb84e8",
+      "name": "Log Negative Lead CSV (Sheet)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        150,
+        2200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "UJsnKRELmiMLRokU",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "leads",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "mobile",
+              "condition": "eq",
+              "keyValue": "={{ $('Extract Lead Data').item.json.phone }}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "status",
+              "fieldValue": "Negative"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        400,
+        2200
+      ],
+      "id": "ce366988-21b1-4455-9509-5f0172c94b12",
+      "name": "Update a row",
+      "credentials": {
+        "supabaseApi": {
+          "id": "gcxgVhXcVMSggn7Y",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -350,
+        1400
+      ],
+      "id": "402f164d-caba-412d-b4bf-b44e65ae686b",
+      "name": "Google Gemini Chat Model1",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "nAymeRKCKZBXfyz6",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Receive Lead (WhatsApp)": {
+      "main": [
+        [
+          {
+            "node": "Extract Lead Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Lead Data": {
+      "main": [
+        [
+          {
+            "node": "Is Button or Follow-Up?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Button or Follow-Up?": {
+      "main": [
+        [
+          {
+            "node": "Route Button Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Which Follow-Up Step?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Lead Qualification Agent1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Button Action": {
+      "main": [
+        [
+          {
+            "node": "send-services-info",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "send-pricing-info",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "aebb85b5-3b75-4470-bada-bc6ec9520697",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Lead Qualification Agent1": {
+      "main": [
+        [
+          {
+            "node": "Route by Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Lead Qualification Agent1",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI GPT-4": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Lead Qualification Agent1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser1": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Lead Qualification Agent1",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Decision": {
+      "main": [
+        [
+          {
+            "node": "Send AI Reply (WhatsApp)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "aebb85b5-3b75-4470-bada-bc6ec9520697",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Which Follow-Up Step?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "a2faac9f-fa42-4d1b-8b20-c35ab7eb84e8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send AI Reply (WhatsApp)": {
+      "main": [
+        [
+          {
+            "node": "send-options-menu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "aebb85b5-3b75-4470-bada-bc6ec9520697": {
+      "main": [
+        [
+          {
+            "node": "Book Meeting in CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Book Meeting in CRM": {
+      "main": [
+        [
+          {
+            "node": "61d104d0-4da1-4139-91e6-9fdf99491292",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Which Follow-Up Step?": {
+      "main": [
+        [
+          {
+            "node": "1836ec0b-bc2d-420b-8d92-3c949778f105",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "5cb47e56-9fba-4a60-9b39-e2868168246d",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "06ae88ed-a944-4719-9662-7bd073bbd2d9",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1836ec0b-bc2d-420b-8d92-3c949778f105": {
+      "main": [
+        [
+          {
+            "node": "a5b6ef70-1926-4413-bd74-dcea6f023b03",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "a5b6ef70-1926-4413-bd74-dcea6f023b03": {
+      "main": [
+        [
+          {
+            "node": "6438eb1d-0183-425a-9544-73f519bc8cab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6438eb1d-0183-425a-9544-73f519bc8cab": {
+      "main": [
+        [
+          {
+            "node": "5cb47e56-9fba-4a60-9b39-e2868168246d",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5cb47e56-9fba-4a60-9b39-e2868168246d": {
+      "main": [
+        [
+          {
+            "node": "e37d05d0-bd42-41b4-a858-7b2c92c8315f",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "e37d05d0-bd42-41b4-a858-7b2c92c8315f": {
+      "main": [
+        [
+          {
+            "node": "06ae88ed-a944-4719-9662-7bd073bbd2d9",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "06ae88ed-a944-4719-9662-7bd073bbd2d9": {
+      "main": [
+        [
+          {
+            "node": "a2faac9f-fa42-4d1b-8b20-c35ab7eb84e8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "a2faac9f-fa42-4d1b-8b20-c35ab7eb84e8": {
+      "main": [
+        [
+          {
+            "node": "Update a row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Structured Output Parser1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "bc89775c-eaf0-4a01-a9bf-680be8ceb6ee",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6934eda13c61fdcc5d9f408b1e33297021b04918e95fe17c69cc339230e02943"
+  },
+  "id": "G9tXqPbF1oq5rmDr",
+  "tags": []
+}

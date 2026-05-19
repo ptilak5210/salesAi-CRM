@@ -2,9 +2,16 @@ import React, { useState, useEffect } from 'react';
 import {
     Facebook, MessageCircle, Upload, Download, Smartphone, Zap, Settings, Share2, CheckCircle2, X
 } from 'lucide-react';
-
 import { ConnectWhatsAppModal } from '../../components/Dashboard/ConnectWhatsAppModal';
-import { getWhatsAppCredentials, updateAutoReplyConfig, toggleAiReply } from '../../services/whatsappService';
+import { DataActivityModal } from '../../components/Dashboard/DataActivityModal';
+import { 
+    getWhatsAppCredentials, 
+    updateAutoReplyConfig, 
+    toggleAiReply,
+    toggleAiAgent,
+    updateAiAgentConfig,
+    testAiAgentWebhook
+} from '../../services/whatsappService';
 import { AuthSession } from '../../../utils/types';
 
 interface AutomationsViewProps {
@@ -35,6 +42,9 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
     const [aiAgentSaved, setAiAgentSaved] = useState(false);
     const [testingWebhook, setTestingWebhook] = useState(false);
     const [testResult, setTestResult] = useState<{success?: boolean; message?: string} | null>(null);
+
+    const [isDataModalOpen, setIsDataModalOpen] = useState(false);
+    const [dataModalTab, setDataModalTab] = useState<'import' | 'export' | 'history'>('import');
 
     // Poll for changes
     useEffect(() => {
@@ -101,9 +111,6 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
         setAiAgentSaving(true);
         setAiAgentError('');
         try {
-            // dynamically imported to avoid circular dependencies if any, but since we import at top it's fine
-            const { toggleAiAgent, updateAiAgentConfig } = await import('../../services/whatsappService');
-            
             // Save URL first
             const urlRes = await updateAiAgentConfig(session.token, webhookUrl);
             if (!urlRes.success) throw new Error(urlRes.error || 'Failed to save webhook URL.');
@@ -132,8 +139,6 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
         setTestingWebhook(true);
         setTestResult(null);
         try {
-            const { testAiAgentWebhook, updateAiAgentConfig } = await import('../../services/whatsappService');
-            
             // Auto-save the URL first to ensure the backend tests the current input
             await updateAiAgentConfig(session.token, webhookUrl);
             
@@ -152,6 +157,11 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
     };
 
     const saveAutoReplyConfig = async () => {
+        if (autoReplyEnabled && !autoReplyText.trim()) {
+            setAutoReplyError('Please enter a message for the auto-responder.');
+            return;
+        }
+
         setAutoReplySaving(true);
         setAutoReplyError('');
         try {
@@ -229,14 +239,14 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
                     description: 'Upload leads from Excel or CSV files directly into your SalesAI account.',
                     icon: <Upload className="w-6 h-6 text-purple-600" />,
                     status: 'Upload >',
-                    onClick: () => { }
+                    onClick: () => { setDataModalTab('import'); setIsDataModalOpen(true); }
                 },
                 {
                     name: 'Data Export',
                     description: 'Download your lead database for offline analysis or backup.',
                     icon: <Download className="w-6 h-6 text-orange-600" />,
                     status: 'Download >',
-                    onClick: () => { }
+                    onClick: () => { setDataModalTab('export'); setIsDataModalOpen(true); }
                 }
             ]
         }
@@ -277,7 +287,14 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
 
             {/* Content Area */}
             <div className="flex-1 space-y-12">
-                {marketingIntegrations.map((section, idx) => (
+                {marketingIntegrations.map((section, idx) => {
+                    const filteredItems = activeTab === 'Active Integrations' 
+                        ? section.items.filter((item: any) => item.isConnected)
+                        : section.items;
+
+                    if (filteredItems.length === 0) return null;
+
+                    return (
                     <div key={idx} className="space-y-6">
                         <div className="border-l-4 border-blue-500 pl-4">
                             <h3 className="text-xl font-bold text-slate-900">{section.title}</h3>
@@ -285,7 +302,7 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            {section.items.map((item, itemIdx) => {
+                            {filteredItems.map((item, itemIdx) => {
                                 const isLinkConnected = (item as any).isConnected;
                                 return (
                                     <div
@@ -319,7 +336,7 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
                                         </p>
 
                                         <div className={`pt-4 border-t flex items-center text-sm font-bold transition-colors ${isLinkConnected ? 'border-green-50 text-green-600' : 'border-slate-50 text-slate-400 group-hover:text-blue-600'}`}>
-                                            {isLinkConnected ? 'Manage Integration' : 'Open Settings'}
+                                            {isLinkConnected ? 'Manage Integration' : (item.name === 'Bulk Import' ? 'Start Upload' : item.name === 'Data Export' ? 'Download CSV' : 'Open Settings')}
                                             <span className={`ml-2 transition-transform ${isLinkConnected ? '' : 'group-hover:translate-x-1'}`}>
                                                 {isLinkConnected ? '●' : '→'}
                                             </span>
@@ -329,7 +346,7 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
                             })}
                         </div>
                     </div>
-                ))}
+                )})}
             </div>
 
             <ConnectWhatsAppModal
@@ -340,6 +357,14 @@ export const AutomationsView = ({ onOpenMetaModal, onWhatsAppSuccess, session }:
                     onWhatsAppSuccess();
                 }}
                 session={session}
+            />
+
+            <DataActivityModal
+                isOpen={isDataModalOpen}
+                onClose={() => setIsDataModalOpen(false)}
+                onSuccess={() => setIsDataModalOpen(false)}
+                session={session}
+                defaultTab={dataModalTab}
             />
 
             {/* Auto-Responder settings modal */}

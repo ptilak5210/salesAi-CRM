@@ -1,5 +1,0 @@
-check_sent.ts(1,31): error TS2307: Cannot find module './database/supabase' or its corresponding type declarations.
-check_sent.ts(21,43): error TS7006: Parameter 'm' implicitly has an 'any' type.
-scripts/set-pwd.ts(1,31): error TS2307: Cannot find module '../database/supabase' or its corresponding type declarations.
-scripts/verify_contacts.ts(5,36): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
-  Type 'undefined' is not assignable to type 'string'.

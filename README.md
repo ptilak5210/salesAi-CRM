@@ -1,55 +1,167 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# SalesAI — Outreach & CRM Platform
 
-# Run and deploy your AI Studio app
+**SalesAI** is a comprehensive, B2B Customer Relationship Management (CRM) platform designed to automate sales outreach, manage leads, and handle real-time WhatsApp communication. It integrates powerful workflow automation engines to ensure sales teams never miss a follow-up.
 
-This contains everything you need to run your app locally.
+---
 
-View your app in AI Studio: https://ai.studio/apps/drive/1qZwEWBA3u0dIvEAidJCo2xKGp94Uz1gr
+## 🚀 Key Features
 
-## Run Locally
+- **Real-Time WhatsApp Inbox:** Communicate seamlessly with leads via an integrated WhatsApp Web interface (powered by Baileys & Socket.IO).
+- **Automated Workflows:** Trigger custom follow-up sequences using external webhooks (n8n integration).
+- **Intelligent Lead Management:** Score leads, track pipeline status, and import/export CSV data easily.
+- **Activity Scheduling:** Manage sales meetings and calendar events.
+- **Dynamic Dashboard:** View real-time analytics, pipeline health, and pending approvals.
 
-**Prerequisites:**  Node.js
+---
 
-1. Install dependencies: `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app: `npm run dev`
+## 🛠️ Technology Stack
 
-## Database (Supabase)
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| **Frontend** | React 19, Vite, Tailwind CSS | High-performance Single Page Application (SPA). |
+| **Backend** | Node.js, Express.js (Port 3001) | REST API and WebSocket server. |
+| **Real-time** | Socket.IO | Bidirectional communication for the Inbox. |
+| **Database & Auth** | Supabase (PostgreSQL) | Secure data storage and JWT authentication. |
+| **Messaging** | `@whiskeysockets/baileys` | Direct WhatsApp Web protocol integration. |
+| **Queueing** | BullMQ + Upstash Redis | Reliable background job processing. |
 
-- **WhatsApp (contacts, messages, RLS):** Run **[database/MIGRATE_WHATSAPP.sql](database/MIGRATE_WHATSAPP.sql)** in the Supabase SQL Editor. It is idempotent (safe to run more than once).
-- **WhatsApp Auto-Responder:** Run **[database/ADD_AUTO_REPLY.sql](database/ADD_AUTO_REPLY.sql)** to add `auto_reply_enabled` and `auto_reply_text` to `whatsapp_credentials`.
+---
 
-If you see "policy already exists", run **MIGRATE_WHATSAPP.sql**; it drops policies before recreating them.
+## 📐 System Architecture
 
-**Checklist for Inbox and auto-reply:** (1) Run **ADD_AUTO_REPLY.sql** so auto-reply settings are stored. (2) Ensure the backend is reachable from the frontend (CORS and Socket.IO are configured so the Inbox socket can connect with credentials; frontend typically runs on port 3000 or 5173, backend on 3001).
+The following diagram outlines the system's robust 3-tier architecture.
 
-## Project setup (full flow)
+```mermaid
+flowchart TD
+    classDef frontend fill:#3b82f6,stroke:#1d4ed8,stroke-width:2px,color:#fff;
+    classDef backend fill:#10b981,stroke:#047857,stroke-width:2px,color:#fff;
+    classDef database fill:#f59e0b,stroke:#b45309,stroke-width:2px,color:#fff;
+    classDef external fill:#64748b,stroke:#334155,stroke-width:2px,color:#fff;
 
-1. **Install and run:** `npm install`, set `GEMINI_API_KEY` in `.env.local`, then `npm run dev`.
-2. **Supabase:** In the Supabase SQL Editor, run **MIGRATE_WHATSAPP.sql**, then **ADD_AUTO_REPLY.sql** (see Database section above).
-3. **Connect WhatsApp:** In the app go to **Dashboard → Automations**. Under "WhatsApp Connection" click **Setup** and scan the QR code with WhatsApp on your phone. Wait until it shows **CONNECTED**.
-4. **Auto-respond when a client writes:** In **Automations**, open **Auto-Responder** (same section). Turn **Enable auto-reply** on and set the message (e.g. "Thank you! We'll reply shortly."). Click **Save**. When a lead sends a message, they will get this reply automatically. Optionally use **AI Agent Replier** instead for AI-generated replies.
-5. **Inbox:** Use **Dashboard → Inbox** to view and send messages. If you see "WhatsApp offline", ensure WhatsApp is connected in Automations and that the backend is running; status refreshes every few seconds.
+    subgraph "Tier 1: Presentation Layer"
+        SPA["React 19 SPA (Vite)"]:::frontend
+        Dashboard["Dashboard View"]:::frontend
+        Inbox["Inbox View (Real-time)"]:::frontend
+        SPA --> Dashboard
+        SPA --> Inbox
+    end
 
-## Troubleshooting
+    subgraph "Tier 2: Application Layer (Node/Express)"
+        API["REST API (Port 3001)"]:::backend
+        Socket["Socket.IO Server"]:::backend
+        Baileys["WhatsApp Connection Manager"]:::backend
+        Queue["BullMQ Worker"]:::backend
+    end
 
-- **Backend must run on port 3001** for the Inbox and WhatsApp send to work. Use `npm run dev:backend` (or your usual backend start command). If the frontend can’t reach the backend, Inbox will show offline and sends will fail.
-- **Messages not reaching WhatsApp:** When you send from the CRM Inbox, check the backend logs. You should see a log like `==> Hit /api/whatsapp/send` when a send is requested. If sends still don’t reach WhatsApp, look for send errors in the backend logs and confirm WhatsApp is connected in Automations.
+    subgraph "Tier 3: Data Layer"
+        Supabase[("Supabase (PostgreSQL)")]:::database
+        Redis[("Upstash Redis")]:::database
+    end
 
+    subgraph "External Integrations"
+        WA["WhatsApp Mobile/Web"]:::external
+        N8N["n8n Automation Engine"]:::external
+    end
 
-bilobed whatsapp 
-node js library
+    Dashboard <-->|HTTP REST| API
+    Inbox <-->|WebSocket| Socket
+    
+    API <--> Supabase
+    Socket <--> API
+    
+    API <--> Baileys
+    Baileys <-->|Web Protocol| WA
+    
+    API --> Queue
+    Queue <--> Redis
+    Baileys <-->|Webhook POST| N8N
+```
 
+---
 
-auth-supabase
-oauth-supabase
-database-supabase
+## 🔄 Data Flows
 
+### Inbound Message Sequence
+This sequence illustrates how the system handles incoming WhatsApp messages and triggers automated workflows.
 
-whatsapp-qr 
+```mermaid
+sequenceDiagram
+    participant Lead as Lead (WhatsApp)
+    participant Baileys as WA Manager (Backend)
+    participant DB as Supabase DB
+    participant Socket as Socket.IO
+    participant Frontend as React Inbox
+    participant N8N as Workflow Engine
 
+    Lead->>Baileys: Sends Message
+    activate Baileys
+    Baileys->>DB: Log to `whatsapp_messages`
+    Baileys->>Socket: Emit 'new-message'
+    Socket->>Frontend: Update UI Real-time
+    
+    alt Automation Enabled
+        Baileys->>N8N: POST Payload to Webhook
+        activate N8N
+        N8N-->>N8N: Execute Follow-up Logic
+        N8N->>Baileys: POST /api/n8n/send (Reply)
+        deactivate N8N
+        Baileys->>Lead: Deliver Automated Reply
+    else Auto-Responder
+        Baileys->>Lead: Send static greeting
+    end
+    deactivate Baileys
+```
 
-redis
-https://console.upstash.com/redis/87808327-26ed-46a2-b43b-674fb6b91e1b?teamid=0
+---
+
+## 💻 Local Development Setup
+
+Follow these steps to run the SalesAI platform locally.
+
+### Prerequisites
+- Node.js (v20+ recommended)
+- An active Supabase project
+- An Upstash Redis instance
+
+### 1. Installation
+Clone the repository and install the required dependencies:
+```bash
+npm install
+```
+
+### 2. Environment Configuration
+Create a `.env.local` or update the existing `.env` file in the root directory with your credentials:
+```env
+VITE_SUPABASE_URL=your_supabase_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+REDIS_URL=your_upstash_redis_url
+PORT=3001
+```
+
+### 3. Database Migration
+Ensure your Supabase database is properly configured. 
+- Run the SQL migration scripts located in the `database/` folder via the Supabase SQL Editor to set up the necessary tables (e.g., `whatsapp_credentials`, `leads`, `activities`) and Row Level Security (RLS) policies.
+
+### 4. Running the Application
+The project requires both the backend API and the frontend Vite server to run concurrently.
+
+Start the backend server (runs on Port 3001):
+```bash
+npm run dev:backend
+```
+
+In a new terminal window, start the frontend server (runs on Port 3000):
+```bash
+npm run dev
+```
+
+### 5. Connecting WhatsApp
+1. Navigate to **Dashboard → Automations** in the frontend UI.
+2. Click **Setup** under the WhatsApp Connection card.
+3. Scan the generated QR code using the "Linked Devices" feature in your WhatsApp mobile app.
+4. Once the status reads **CONNECTED**, the inbox is ready for real-time messaging.
+
+---
+
+*Developed by the Software Engineering Team.*

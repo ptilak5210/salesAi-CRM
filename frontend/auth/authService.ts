@@ -119,8 +119,14 @@ export const signInWithGitHub = async (): Promise<void> => {
 
 export const signOut = async (): Promise<void> => {
     localStorage.removeItem('metaConnected');
-    const { error } = await supabase.auth.signOut();
-    if (error) throw new Error(error.message);
+    try {
+        const { error } = await supabase.auth.signOut();
+        if (error) {
+            console.warn('[AuthService] Supabase signOut error:', error.message);
+        }
+    } catch (err) {
+        console.warn('[AuthService] Exception in signOut:', err);
+    }
 };
 
 export const getUserSession = async (): Promise<AuthSession | null> => {
@@ -130,7 +136,7 @@ export const getUserSession = async (): Promise<AuthSession | null> => {
 };
 
 export const createClientProfile = async (profileData: Omit<ClientProfile, 'id' | 'created_at'>): Promise<void> => {
-    const { error } = await supabase.from('clients').insert([profileData]);
+    const { error } = await supabase.from('clients').upsert([profileData], { onConflict: 'user_id' });
     if (error) throw new Error(error.message);
 };
 
@@ -148,16 +154,77 @@ const enhanceSession = async (user: any, token?: string): Promise<AuthSession> =
     const meta = user.user_metadata ?? {};
     console.log('[Auth] Building session for user:', user.id, user.email);
 
-    // Check if user has a client profile setup
-    let hasClientProfile = true; // Default to true to avoid blocking; UI will verify later
+    // Step 1: Determine real role — call backend /api/me/role
+    // This checks if this Supabase user is in the team_members table (team_member)
+    // or not (super_admin / owner). Falls back gracefully if backend is down.
+    let userRole: 'super_admin' | 'team_member' = 'super_admin';
+    let teamMemberId: string | undefined;
+    let ownerId: string = user.id; // default to self
+    let title: string | undefined;
+    let pipeline_ids: string[] = [];
+    let permissions: AuthSession['user']['permissions'] | undefined;
+
+    try {
+        if (token) {
+            const roleRes = await fetch('http://localhost:3001/api/me/role', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (roleRes.ok) {
+                const roleData = await roleRes.json();
+                if (roleData.role === 'team_member') {
+                    userRole = 'team_member';
+                    teamMemberId = roleData.team_member_id;
+                    ownerId = roleData.owner_id || user.id;
+                    title = roleData.title;
+                    pipeline_ids = roleData.pipeline_ids || [];
+                    permissions = roleData.permissions || {
+                        can_export: false,
+                        can_import: false,
+                        can_delete: false,
+                        can_edit: true,
+                        can_view_analytics: false
+                    };
+                    console.log('[Auth] Role resolved: team_member | title:', title, '| permissions:', permissions);
+                } else {
+                    userRole = 'super_admin';
+                    ownerId = roleData.owner_id || user.id;
+                    console.log('[Auth] Role resolved: super_admin');
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('[Auth] Could not determine role from backend — defaulting to super_admin', e);
+    }
+
+    // Step 2: Check if user has a client profile (only relevant for super_admin)
+    let hasClientProfile = true;
+    if (userRole === 'super_admin') {
+        try {
+            const { data: clientData } = await import('../lib/supabase').then(m =>
+                m.supabase.from('clients').select('id').eq('user_id', user.id).maybeSingle()
+            );
+            hasClientProfile = !!clientData;
+        } catch (e) {
+            console.warn('[Auth] Could not check client profile:', e);
+            hasClientProfile = true; // fail open so user is not stuck
+        }
+    }
 
     const session: AuthSession = {
         user: {
             id: user.id,
             name: meta.name ?? meta.full_name ?? user.email?.split('@')[0] ?? 'User',
             email: user.email ?? '',
-            role: 'Owner',
-            companyId: meta.companyId ?? 'default'
+            role: userRole,
+            companyId: meta.companyId ?? 'default',
+            owner_id: ownerId,
+            // RBAC fields — only populated for team members
+            ...(userRole === 'team_member' && {
+                team_member_id: teamMemberId,
+                title,
+                pipeline_ids,
+                permissions
+            })
         },
         company: {
             id: meta.companyId ?? 'default',
@@ -170,6 +237,6 @@ const enhanceSession = async (user: any, token?: string): Promise<AuthSession> =
         hasClientProfile
     };
 
-    console.log('[Auth] Final buildSession object:', session);
+    console.log('[Auth] Final session built — role:', session.user.role, '| hasClientProfile:', hasClientProfile);
     return session;
 };

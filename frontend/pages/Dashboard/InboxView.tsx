@@ -262,11 +262,11 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
     const [isLoadingConversations, setIsLoadingConversations] = useState(true);
     const [hasMoreMessages, setHasMoreMessages] = useState(true);
     const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
-    
+
     // AI / n8n tracking
     const [isAiAgentEnabled, setIsAiAgentEnabled] = useState(false);
     const [aiPausedMap, setAiPausedMap] = useState<Record<string, boolean>>({});
-    
+
     // UI state
     const [showTemplates, setShowTemplates] = useState(false);
     const [showEmoji, setShowEmoji] = useState(false);
@@ -334,7 +334,7 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                 isFetchingRef.current = false;
                 return;
             }
-            
+
             // Simultaneously fetch all AI paused statuses for contacts
             let aiPauseDict: Record<string, boolean> = {};
             try {
@@ -348,7 +348,7 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                     });
                 }
             } catch (err) { }
-            
+
             setAiPausedMap(aiPauseDict);
 
             const convs: WaConversation[] = data.map((m: any) => {
@@ -427,10 +427,10 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                 const cleanSel = sel.replace(/@.*$/, '');
                 const cleanMsgPhone = (m.lead_phone || '').replace(/@.*$/, '');
                 const cleanMsgJid = (m.jid || '').replace(/@.*$/, '');
-                
-                const isForCurrent = 
-                    (cleanMsgPhone && cleanMsgPhone === cleanSel) || 
-                    (cleanMsgJid && cleanMsgJid === cleanSel) || 
+
+                const isForCurrent =
+                    (cleanMsgPhone && cleanMsgPhone === cleanSel) ||
+                    (cleanMsgJid && cleanMsgJid === cleanSel) ||
                     (m.jid != null && String(m.jid) === sel);
 
                 if (isForCurrent) {
@@ -695,9 +695,9 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
             const result = await sendWhatsAppMedia(session.token, selectedJid, mediaPreview.file, inputText || undefined, selectedConversation?.name);
             if (!result.success) {
                 setError(result.error || 'Media not sent');
-            } else { 
-                setInputText(''); 
-                setMediaPreview(null); 
+            } else {
+                setInputText('');
+                setMediaPreview(null);
                 // Auto-pause mapping
                 setAiPausedMap(prev => ({ ...prev, [selectedJid]: true, [selectedConversation.phone]: true }));
             }
@@ -936,11 +936,10 @@ export const InboxView = ({ leads, session }: { leads: Lead[]; session: AuthSess
                                 <button
                                     onClick={handleToggleHumanTakeover}
                                     title={aiPausedMap[selectedJid] || aiPausedMap[selectedConversation.phone] ? "Resume AI handling" : "Pause AI handling (Human Takeover)"}
-                                    className={`px-3 py-1 text-xs font-bold rounded-full border cursor-pointer hover:opacity-80 transition-all flex items-center gap-1.5 ${
-                                        aiPausedMap[selectedJid] || aiPausedMap[selectedConversation.phone]
+                                    className={`px-3 py-1 text-xs font-bold rounded-full border cursor-pointer hover:opacity-80 transition-all flex items-center gap-1.5 ${aiPausedMap[selectedJid] || aiPausedMap[selectedConversation.phone]
                                             ? 'bg-[#2a3942] border-[#aebac1] text-[#aebac1]'
                                             : 'bg-[#e7f8f2] border-[#00a884] text-[#00a884]'
-                                    }`}
+                                        }`}
                                 >
                                     {aiPausedMap[selectedJid] || aiPausedMap[selectedConversation.phone] ? (
                                         <><AlertCircle size={12} /> AI Paused</>

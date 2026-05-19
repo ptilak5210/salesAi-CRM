@@ -17,9 +17,13 @@ import { LeadsView } from './pages/Dashboard/LeadsView';
 import { InboxView } from './pages/Dashboard/InboxView';
 import { AutomationsView } from './pages/Dashboard/AutomationsView';
 import { ActivitiesView } from './pages/Dashboard/ActivitiesView';
+import { DealsView } from './pages/Dashboard/DealsView';
+import { AnalyticsView } from './pages/Dashboard/AnalyticsView';
 import { ConnectMetaModal } from './components/Dashboard/ConnectMetaModal';
 import { WelcomeScreen } from './components/Onboarding/WelcomeScreen';
 import { ClientSetupView } from './pages/ClientSetup/ClientSetupView';
+import { AdminView } from './pages/Dashboard/AdminView';
+import { SettingsView } from './pages/Dashboard/SettingsView';
 import { supabase } from './lib/supabase';
 import { getUserSession, signOut } from './auth/authService';
 
@@ -37,9 +41,9 @@ const MOCK_CONVERSATION: Message[] = [
 ];
 
 const MOCK_DEALS: Deal[] = [
-  { id: '1', leadName: 'TechCorp Inc.', amount: 15000, stage: 'Negotiation', probability: 80 },
-  { id: '2', leadName: 'BigBiz Enterprise', amount: 45000, stage: 'Proposal', probability: 50 },
-  { id: '3', leadName: 'Startup One', amount: 5000, stage: 'Closed Won', probability: 100 },
+  { id: '1', lead_name: 'TechCorp Inc.', value: 15000, stage: 'Negotiation', score: 'Warm', title: 'TechCorp Software Deal', pipeline_id: 'mock', stage_id: 'mock' },
+  { id: '2', lead_name: 'BigBiz Enterprise', value: 45000, stage: 'Proposal Sent', score: 'Hot', title: 'BigBiz CRM License', pipeline_id: 'mock', stage_id: 'mock' },
+  { id: '3', lead_name: 'Startup One', value: 5000, stage: 'Won', score: 'Hot', title: 'Startup One Setup', pipeline_id: 'mock', stage_id: 'mock' },
 ];
 
 const MOCK_MEETINGS: Meeting[] = [
@@ -57,7 +61,7 @@ const App = () => {
   const [isAuthLoading, setIsAuthLoading] = useState(true); // Prevent landing page flash
 
   // Persist view changes to sessionStorage (only authenticated views, not public ones)
-  const AUTH_VIEWS = ['dashboard', 'leads', 'inbox', 'meetings', 'deals', 'automation', 'analytics', 'settings', 'client-setup'];
+  const AUTH_VIEWS = ['dashboard', 'leads', 'inbox', 'meetings', 'deals', 'automation', 'analytics', 'settings', 'client-setup', 'admin'];
   const setViewAndSave = (v: string) => {
     if (AUTH_VIEWS.includes(v)) sessionStorage.setItem('appView', v);
     else sessionStorage.removeItem('appView');
@@ -73,8 +77,13 @@ const App = () => {
   const handleSignup = () => setView('signup');
 
   const handleAuthSuccess = (newSession: AuthSession) => {
-    console.log('[App] Auth Success. hasClientProfile:', newSession.hasClientProfile);
+    console.log('[App] Auth Success. role:', newSession.user.role, '| hasClientProfile:', newSession.hasClientProfile);
     setSession(newSession);
+    // Team members skip client-setup and WhatsApp modal
+    if (newSession.user.role === 'team_member') {
+      setViewAndSave('dashboard');
+      return;
+    }
     if (!newSession.hasClientProfile) {
       setViewAndSave('client-setup');
     } else {
@@ -89,11 +98,12 @@ const App = () => {
   const handleLogout = async () => {
     try {
       await signOut();
+    } catch (e) {
+      console.error("Supabase signOut error (clearing local state anyway):", e);
+    } finally {
       setSession(null);
       sessionStorage.removeItem('appView'); // Clear saved view on logout
       setView('home');
-    } catch (e) {
-      console.error(e);
     }
   };
 
@@ -108,6 +118,11 @@ const App = () => {
     }, 6000);
 
     const redirectToDashboard = (activeSession: any) => {
+      // Team members skip client-setup entirely
+      if (activeSession.user.role === 'team_member') {
+        setViewAndSave('dashboard');
+        return;
+      }
       if (!activeSession.hasClientProfile) {
         setViewAndSave('client-setup');
       } else {
@@ -180,9 +195,10 @@ const App = () => {
     if (!session) return;
 
     const fetchLeads = async () => {
+      // Fetch leads with team_member name via Supabase foreign-key join
       const { data, error } = await supabase
         .from('leads')
-        .select('*')
+        .select('*, team_members(name)')
         .order('created_at', { ascending: false });
 
       if (error) {
@@ -192,13 +208,18 @@ const App = () => {
           id: lead.id,
           name: lead.name || lead.display_name || 'Unknown',
           email: lead.email || '',
-          phone: lead.mobile || '',           // maps DB `mobile` column → Lead.phone
+          phone: lead.mobile || '',
           company: lead.display_name || lead.name || '',
           role: 'Client',
           status: (lead.status || 'New') as any,
           score: (lead.score || 'Cold') as any,
           source: lead.source || 'Manual',
-          lastContact: lead.updated_at ? new Date(lead.updated_at).toLocaleDateString() : 'Never'
+          lastContact: lead.updated_at ? new Date(lead.updated_at).toLocaleDateString() : 'Never',
+          created_at: lead.created_at || null,
+          updated_at: lead.updated_at || null,
+          // Pass through the joined team member name for the Assigned To column
+          assigned_to_name: (lead.team_members as any)?.name || null,
+          assigned_to_id: lead.assigned_to_id || null,
         })));
       }
     };
@@ -244,7 +265,7 @@ const App = () => {
     setConversation([...conversation, newMsg]);
   };
 
-  // View Router
+    // View Router
   const renderView = () => {
     // Show minimal loading screen while checking auth — prevents landing page flash
     if (isAuthLoading) {
@@ -273,8 +294,8 @@ const App = () => {
       );
     }
 
-    // Client Setup View (authenticated but no profile)
-    if (session && !session.hasClientProfile) {
+    // Client Setup View (authenticated but no profile) — skip for team members
+    if (session && !session.hasClientProfile && session.user.role !== 'team_member') {
       return (
         <ClientSetupView
           session={session}
@@ -292,22 +313,33 @@ const App = () => {
 
     // Dashboard Views
     const dashboardContent = () => {
+      const isAdmin = session.user.role === 'super_admin';
+      const perms = session.user.permissions;
+      const canViewAnalytics = isAdmin || !!perms?.can_view_analytics;
+      const canManageTeam = isAdmin; // only super_admin can manage team
+
       switch (view) {
         case 'dashboard': return <DashboardView session={session} leads={leads} MOCK_DEALS={MOCK_DEALS} activities={activities} refreshActivities={fetchActivities} />;
-        case 'leads': return <LeadsView leads={leads} />;
+        case 'leads': return <LeadsView leads={leads} session={session} />;
         case 'inbox': return <InboxView leads={leads} session={session} />;
         case 'meetings': return <ActivitiesView session={session!} activities={activities} leads={leads} refreshActivities={fetchActivities} />;
-        case 'deals': return <PlaceholderView title="Deals Pipeline" icon={BarChart3 as any} />;
+        case 'deals': return <DealsView session={session!} leads={leads} />;
         case 'automation': return <AutomationsView onOpenMetaModal={() => setMetaModalOpen(true)} onWhatsAppSuccess={() => setShowWelcome(true)} session={session} />;
-        case 'analytics': return <PlaceholderView title="Analytics & Reports" icon={PieChart as any} />;
-        case 'settings': return <PlaceholderView title="Settings" icon={Settings as any} />;
+        case 'analytics':
+          if (!canViewAnalytics) return <DashboardView session={session} leads={leads} MOCK_DEALS={MOCK_DEALS} activities={activities} refreshActivities={fetchActivities} />;
+          return <AnalyticsView session={session!} />;
+        case 'admin':
+          if (!canManageTeam) return <DashboardView session={session} leads={leads} MOCK_DEALS={MOCK_DEALS} activities={activities} refreshActivities={fetchActivities} />;
+          return <AdminView session={session!} />;
+        case 'settings':
+          return <SettingsView session={session!} />;
         default: return <DashboardView session={session} leads={leads} MOCK_DEALS={MOCK_DEALS} activities={activities} refreshActivities={fetchActivities} />;
       }
     };
 
     return (
       <div className="min-h-screen bg-slate-50 flex">
-        <Sidebar currentView={view} onChangeView={setViewAndSave} onLogout={handleLogout} user={session.user} />
+        <Sidebar currentView={view} onChangeView={setViewAndSave} onLogout={handleLogout} user={session.user} session={session} />
         <MobileDrawer
           isOpen={mobileMenuOpen}
           onClose={() => setMobileMenuOpen(false)}

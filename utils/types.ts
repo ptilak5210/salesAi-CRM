@@ -2,7 +2,7 @@
 export type LeadStatus = 'New' | 'Contacted' | 'Replied' | 'Qualified' | 'Closed' | 'Follow Up';
 export type LeadScoreTag = 'Hot' | 'Warm' | 'Cold';
 export type Channel = 'WhatsApp' | 'LinkedIn' | 'Email';
-export type UserRole = 'ADMIN' | 'CLIENT' | 'Owner' | 'Agent'; // Updated roles
+export type UserRole = 'super_admin' | 'team_member' | 'ADMIN' | 'CLIENT' | 'Owner' | 'Agent';
 export type PlanType = 'Starter' | 'Pro' | 'Business';
 export type PublicViewType = 'home' | 'features' | 'how-it-works' | 'pricing' | 'contact' | 'about';
 
@@ -12,6 +12,38 @@ export interface User {
   email: string;
   role: UserRole;
   companyId: string;
+  owner_id: string;          // The auth.uid() of the workspace owner
+  // Team member specific fields (populated for role === 'team_member')
+  team_member_id?: string;   // UUID in team_members table
+  title?: string;            // Display role: 'Manager' | 'Sales Executive' | 'Admin'
+  pipeline_ids?: string[];   // Which pipelines this member can access
+  permissions?: {
+    can_export: boolean;
+    can_import: boolean;
+    can_delete: boolean;
+    can_edit: boolean;
+    can_view_analytics: boolean;
+  };
+}
+
+export interface TeamMember {
+  id: string;
+  owner_id: string;
+  auth_user_id?: string;
+  name: string;
+  email: string;
+  phone?: string;
+  role: string;
+  pipeline_ids: string[];
+  is_active: boolean;
+  permissions?: {
+    can_export: boolean;
+    can_import: boolean;
+    can_delete: boolean;
+    can_edit: boolean;
+    can_view_analytics: boolean;
+  };
+  created_at: string;
 }
 
 export interface Company {
@@ -74,6 +106,10 @@ export interface Lead {
   score: LeadScoreTag;
   source: string;
   lastContact: string;
+  created_at?: string;
+  updated_at?: string;
+  assigned_to_name?: string | null;
+  assigned_to_id?: string | null;
 }
 
 export interface Message {
@@ -90,12 +126,50 @@ export interface Conversation {
   unreadCount: number;
 }
 
+export interface Pipeline {
+  id: string;
+  user_id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface PipelineStage {
+  id: string;
+  pipeline_id: string;
+  name: string;
+  color: string;
+  bg_color: string;
+  border_color: string;
+  order_index: number;
+}
+
 export interface Deal {
   id: string;
-  leadName: string;
-  amount: number;
-  stage: 'Discovery' | 'Proposal' | 'Negotiation' | 'Closed Won';
-  probability: number;
+  user_id?: string;
+  pipeline_id: string;
+  lead_id?: string;
+  lead_name: string;
+  company?: string;
+  phone?: string;
+  title: string;
+  value: number;
+  stage_id: string;
+  stage?: string;
+  score: 'Hot' | 'Warm' | 'Cold';
+  expected_close_date?: string;
+  closed_at?: string;
+  loss_reason?: string;
+  notes?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface DealStageHistoryEntry {
+  id: string;
+  deal_id: string;
+  from_stage_id?: string;
+  to_stage_id: string;
+  changed_at: string;
 }
 
 export interface Meeting {
@@ -105,6 +179,7 @@ export interface Meeting {
   date: string;
   time: string;
   type: string;
+  agenda?: string;
   status?: 'pending' | 'confirmed' | 'cancelled';
 }
 

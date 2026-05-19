@@ -1,7 +1,10 @@
 import React from 'react';
-import { LayoutDashboard, Users, MessageSquare, Zap, Calendar, BarChart3, PieChart, Settings, Briefcase, LogOut } from 'lucide-react';
+import { LayoutDashboard, Users, MessageSquare, Zap, Calendar, BarChart3, PieChart, Settings, Briefcase, LogOut, Shield, ChevronRight } from 'lucide-react';
+import { usePermissions } from '../../hooks/usePermissions';
 
-export const Sidebar = ({ currentView, onChangeView, onLogout, user }: any) => {
+export const Sidebar = ({ currentView, onChangeView, onLogout, user, session }: any) => {
+    const perms = usePermissions(session || (user ? { user, token: '', company: {} as any, hasClientProfile: true } : null));
+
     const navItems = [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
         { id: 'leads', label: 'Leads', icon: Users },
@@ -9,9 +12,24 @@ export const Sidebar = ({ currentView, onChangeView, onLogout, user }: any) => {
         { id: 'automation', label: 'Automation', icon: Zap },
         { id: 'meetings', label: 'Meetings', icon: Calendar },
         { id: 'deals', label: 'Deals', icon: BarChart3 },
-        { id: 'analytics', label: 'Analytics', icon: PieChart },
-        { id: 'settings', label: 'Settings', icon: Settings },
     ];
+
+    // Show Analytics only if super_admin OR team member with can_view_analytics
+    if (perms.canViewAnalytics) {
+        navItems.push({ id: 'analytics', label: 'Analytics', icon: PieChart });
+    }
+    // Admin & Team tab — super_admin only
+    if (perms.canManageTeam) {
+        navItems.push({ id: 'admin', label: 'Admin & Team', icon: Shield });
+    }
+    
+    // Settings for everyone
+    navItems.push({ id: 'settings', label: 'Settings', icon: Settings });
+
+    // Display role label
+    const roleLabel = perms.isAdmin 
+        ? 'Super Admin' 
+        : user?.title || user?.role || 'Team Member';
 
     return (
         <aside className="hidden md:flex flex-col w-64 bg-slate-900 h-screen fixed left-0 top-0 border-r border-slate-800 text-slate-300 transition-all duration-300">
@@ -42,12 +60,12 @@ export const Sidebar = ({ currentView, onChangeView, onLogout, user }: any) => {
 
             <div className="p-4 border-t border-slate-800 bg-slate-900/50">
                 <div className="flex items-center gap-3 px-2 mb-4">
-                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold shadow-inner text-sm">
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold shadow-inner text-sm flex-shrink-0">
                         {user.name.charAt(0)}
                     </div>
                     <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium text-white truncate">{user.name}</p>
-                        <p className="text-xs text-slate-500 truncate">{user.email}</p>
+                        <p className="text-xs text-slate-500 truncate">{roleLabel}</p>
                     </div>
                 </div>
                 <button

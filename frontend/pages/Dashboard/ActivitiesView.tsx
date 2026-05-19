@@ -14,56 +14,69 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({ session, activit
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
     const [selectedActivityId, setSelectedActivityId] = useState<string | null>(null);
-    const [filters, setFilters] = useState<string[]>(['Meetings']);
     const [isLoading, setIsLoading] = useState(false);
 
     // Modal State
+    const [searchLeadQuery, setSearchLeadQuery] = useState('');
+    const [isLeadDropdownOpen, setIsLeadDropdownOpen] = useState(false);
+    
+    const [saveError, setSaveError] = useState<string | null>(null);
     const [newMeeting, setNewMeeting] = useState({
         title: '',
         attendee: '',
         date: new Date().toISOString().split('T')[0],
-        time: '10:00',
-        type: 'Zoom' as 'Zoom' | 'Google Meet' | 'Phone Call',
+        time: '10:00 AM',
+        type: 'Google Meet' as 'Google Meet' | 'Phone Call' | 'Office Visit' | 'Client Site Visit',
+        agenda: ''
     });
 
     const openCreateModal = () => {
         setModalMode('create');
         setSelectedActivityId(null);
+        setSaveError(null);
         setNewMeeting({
             title: '',
             attendee: leads.length > 0 ? leads[0].name : '',
             date: selectedDate.getFullYear() + '-' + String(selectedDate.getMonth() + 1).padStart(2, '0') + '-' + String(selectedDate.getDate()).padStart(2, '0'),
-            time: '10:00',
-            type: 'Zoom'
+            time: '10:00 AM',
+            type: 'Google Meet',
+            agenda: ''
         });
+        setSearchLeadQuery('');
+        setIsLeadDropdownOpen(false);
         setIsModalOpen(true);
     };
 
     const openEditModal = (activity: Meeting) => {
         setModalMode('edit');
         setSelectedActivityId(activity.id);
+        setSaveError(null);
 
         const dateObj = new Date(activity.date);
         const yyyyMMdd = !isNaN(dateObj.getTime()) ? dateObj.toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
 
-        let time24 = activity.time || '10:00';
-        if (time24.includes('AM') || time24.includes('PM')) {
-            const parts = time24.split(' ');
-            if (parts.length === 2) {
-                let [hours, minutes] = parts[0].split(':');
-                if (hours === '12') hours = '00';
-                if (parts[1] === 'PM') hours = String(parseInt(hours, 10) + 12);
-                time24 = `${hours.padStart(2, '0')}:${minutes}`;
-            }
+        // Keep time as-is if already in AM/PM format (matches dropdown options)
+        // If stored as 24h, convert to AM/PM to match dropdown
+        let timeAmPm = activity.time || '10:00 AM';
+        if (timeAmPm && !timeAmPm.includes('AM') && !timeAmPm.includes('PM')) {
+            // Convert HH:MM to "HH:MM AM/PM"
+            const [hoursStr, minutes] = timeAmPm.split(':');
+            const hoursNum = parseInt(hoursStr, 10);
+            const ampm = hoursNum >= 12 ? 'PM' : 'AM';
+            const hours12 = hoursNum % 12 || 12;
+            timeAmPm = `${String(hours12).padStart(2, '0')}:${minutes} ${ampm}`;
         }
 
         setNewMeeting({
             title: activity.title || '',
             attendee: activity.attendee || '',
             date: yyyyMMdd,
-            time: time24,
-            type: activity.type as any
+            time: timeAmPm,
+            type: activity.type as any,
+            agenda: activity.agenda || ''
         });
+        setSearchLeadQuery(activity.attendee || '');
+        setIsLeadDropdownOpen(false);
         setIsModalOpen(true);
     };
 
@@ -85,30 +98,28 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({ session, activit
     const handleSaveMeeting = async (e: React.FormEvent) => {
         e.preventDefault();
         setIsLoading(true);
+        setSaveError(null);
 
         const [year, month, day] = newMeeting.date.split('-');
         const dateObj = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
         const formattedDate = dateObj.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
 
-        let time12 = newMeeting.time;
-        if (time12) {
-            const [hoursStr, minutes] = time12.split(':');
-            const hoursObj = parseInt(hoursStr, 10);
-            const ampm = hoursObj >= 12 ? 'PM' : 'AM';
-            const hours12 = hoursObj % 12 || 12;
-            time12 = `${hours12}:${minutes} ${ampm}`;
-        }
+        // Time is already in "HH:MM AM/PM" format from the dropdown — send it as-is
+        const timeToSend = newMeeting.time;
 
         const payload = {
             title: newMeeting.title || 'New Activity',
             attendee: newMeeting.attendee || 'Unknown Lead',
             date: formattedDate,
-            time: time12,
+            time: timeToSend,
             type: newMeeting.type,
+            agenda: newMeeting.agenda
         };
 
         try {
-            const url = modalMode === 'edit' ? `http://localhost:3001/api/activities/${selectedActivityId}` : 'http://localhost:3001/api/activities';
+            const url = modalMode === 'edit'
+                ? `http://localhost:3001/api/activities/${selectedActivityId}`
+                : 'http://localhost:3001/api/activities';
             const method = modalMode === 'edit' ? 'PUT' : 'POST';
 
             const response = await fetch(url, {
@@ -120,13 +131,20 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({ session, activit
                 body: JSON.stringify(payload)
             });
 
-            const { data } = await response.json();
-            if (data) {
-                refreshActivities();
-                setIsModalOpen(false);
+            const json = await response.json();
+
+            if (!response.ok) {
+                // Server returned an error (4xx/5xx)
+                setSaveError(json.error || 'Failed to save meeting. Please try again.');
+                return;
             }
+
+            // Success — both POST and PUT return { data: {...} }
+            refreshActivities();
+            setIsModalOpen(false);
         } catch (error) {
             console.error("Error saving activity", error);
+            setSaveError('Network error. Please check your connection and try again.');
         } finally {
             setIsLoading(false);
         }
@@ -172,11 +190,7 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({ session, activit
         }
     };
 
-    const toggleFilter = (filter: string) => {
-        setFilters(prev =>
-            prev.includes(filter) ? prev.filter(f => f !== filter) : [...prev, filter]
-        );
-    };
+
 
     const formatTimeAMPM = (timeStr: string) => {
         if (!timeStr) return '';
@@ -212,17 +226,8 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({ session, activit
         return dateStr === selectedDate.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
     };
 
-    const isFilterMatch = (m: Meeting) => {
-        if (filters.length === 0) return true;
-        if (filters.includes('Meetings') && (m.type === 'Zoom' || m.type === 'Google Meet' || m.type.includes('Meet'))) return true;
-        if (filters.includes('Phone Calls') && m.type === 'Phone Call') return true;
-        // If it doesn't match typed filters but we have other filters, hide it
-        // (Assuming "Messages" and "Notes" don't match our meeting activity types for now)
-        return false;
-    };
-
-    const pendingRequests = activities.filter(m => m.status === 'pending' && isFilterMatch(m));
-    const selectedDateMeetings = activities.filter(m => isToday(m.date) && m.status !== 'pending' && m.status !== 'cancelled' && isFilterMatch(m));
+    const pendingRequests = activities.filter(m => m.status === 'pending');
+    const selectedDateMeetings = activities.filter(m => isToday(m.date) && m.status !== 'pending' && m.status !== 'cancelled');
 
     return (
         <div className="max-w-7xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -303,33 +308,7 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({ session, activit
                         </div>
                     </div>
 
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="p-4 border-b border-slate-100">
-                            <h3 className="font-semibold text-slate-800">Filters</h3>
-                        </div>
-                        <div className="p-4 space-y-3">
-                            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">By Activity Type</p>
-                            {[
-                                { id: 'calls', label: 'Phone Calls', icon: Phone },
-                                { id: 'messages', label: 'Messages', icon: MessageSquare },
-                                { id: 'meetings', label: 'Meetings', icon: CalendarIcon },
-                                { id: 'notes', label: 'Notes', icon: FileText },
-                            ].map((filter) => (
-                                <label key={filter.id} className="flex items-center justify-between group cursor-pointer">
-                                    <div className="flex items-center gap-2 text-sm text-slate-600 group-hover:text-slate-900 transition-colors">
-                                        <filter.icon className="w-4 h-4 text-slate-400" />
-                                        {filter.label}
-                                    </div>
-                                    <input
-                                        type="checkbox"
-                                        checked={filters.includes(filter.label)}
-                                        onChange={() => toggleFilter(filter.label)}
-                                        className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
-                                    />
-                                </label>
-                            ))}
-                        </div>
-                    </div>
+
                 </div>
 
                 <div className="lg:col-span-3">
@@ -440,6 +419,14 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({ session, activit
                                                         <Clock className="w-4 h-4" /> {formatTimeAMPM(meeting.time)}
                                                     </div>
                                                 </div>
+                                                
+                                                {meeting.agenda && (
+                                                    <div className="mt-3 p-3 bg-slate-50 border border-slate-100 rounded-lg">
+                                                        <p className="text-xs font-semibold text-slate-500 mb-1 uppercase tracking-wider">Agenda / Notes</p>
+                                                        <p className="text-sm text-slate-700 whitespace-pre-wrap">{meeting.agenda}</p>
+                                                    </div>
+                                                )}
+
                                                 <div className="flex items-center gap-3 mt-4 pt-4 border-t border-slate-100">
                                                     <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 text-white flex items-center justify-center text-xs font-bold">
                                                         {meeting.attendee ? meeting.attendee.charAt(0) : '?'}
@@ -495,21 +482,60 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({ session, activit
                                 <div>
                                     <label className="block text-sm font-semibold text-slate-700 mb-1.5">Attendee (Lead Name)</label>
                                     <div className="relative">
-                                        <select
-                                            required
-                                            title="Select Lead"
-                                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-slate-800 text-sm cursor-pointer appearance-none pr-10"
-                                            value={newMeeting.attendee}
-                                            onChange={(e) => setNewMeeting({ ...newMeeting, attendee: e.target.value })}
+                                        <div 
+                                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between cursor-pointer focus-within:ring-2 focus-within:ring-indigo-500/20 focus-within:border-indigo-500 transition-all text-slate-800 text-sm"
+                                            onClick={() => setIsLeadDropdownOpen(!isLeadDropdownOpen)}
                                         >
-                                            <option value="" disabled>Select a Lead</option>
-                                            {leads.map(lead => (
-                                                <option key={lead.id} value={lead.name}>{lead.name} ({lead.company})</option>
-                                            ))}
-                                        </select>
-                                        <div className="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none text-slate-400">
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                                            <span className={newMeeting.attendee ? 'text-slate-800' : 'text-slate-400'}>
+                                                {newMeeting.attendee || 'Search and select a Lead...'}
+                                            </span>
+                                            <svg className={`w-4 h-4 text-slate-400 transition-transform ${isLeadDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
                                         </div>
+
+                                        {isLeadDropdownOpen && (
+                                            <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-60 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+                                                <div className="p-2 border-b border-slate-100 bg-slate-50/50">
+                                                    <input 
+                                                        type="text" 
+                                                        placeholder="Search by name or phone..." 
+                                                        className="w-full px-3 py-1.5 text-sm text-slate-900 bg-white border border-slate-200 rounded-lg outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 placeholder:text-slate-400"
+                                                        value={searchLeadQuery}
+                                                        onChange={(e) => setSearchLeadQuery(e.target.value)}
+                                                        autoFocus
+                                                    />
+                                                </div>
+                                                <div className="overflow-y-auto">
+                                                    {leads
+                                                        .filter(l => 
+                                                            l.name.toLowerCase().includes(searchLeadQuery.toLowerCase()) || 
+                                                            l.company.toLowerCase().includes(searchLeadQuery.toLowerCase()) ||
+                                                            (l.phone && l.phone.includes(searchLeadQuery))
+                                                        )
+                                                        .map(lead => (
+                                                            <div 
+                                                                key={lead.id} 
+                                                                className={`px-4 py-2.5 text-sm cursor-pointer transition-colors ${newMeeting.attendee === lead.name ? 'bg-indigo-50 text-indigo-700 font-bold' : 'hover:bg-slate-50 text-slate-700'}`}
+                                                                onClick={() => {
+                                                                    setNewMeeting({ ...newMeeting, attendee: lead.name });
+                                                                    setSearchLeadQuery('');
+                                                                    setIsLeadDropdownOpen(false);
+                                                                }}
+                                                            >
+                                                                <div className="font-medium">{lead.name}</div>
+                                                                <div className="text-xs text-slate-400 mt-0.5">{lead.company}{lead.phone ? ` • ${lead.phone}` : ''}</div>
+                                                            </div>
+                                                        ))
+                                                    }
+                                                    {leads.filter(l => 
+                                                        l.name.toLowerCase().includes(searchLeadQuery.toLowerCase()) || 
+                                                        l.company.toLowerCase().includes(searchLeadQuery.toLowerCase()) ||
+                                                        (l.phone && l.phone.includes(searchLeadQuery))
+                                                    ).length === 0 && (
+                                                        <div className="px-4 py-3 text-sm text-slate-500 text-center">No leads found.</div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
 
@@ -556,14 +582,31 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({ session, activit
                                         value={newMeeting.type}
                                         onChange={(e) => setNewMeeting({ ...newMeeting, type: e.target.value as any })}
                                     >
-                                        <option value="Zoom">Zoom Meeting</option>
                                         <option value="Google Meet">Google Meet</option>
                                         <option value="Phone Call">Phone Call</option>
+                                        <option value="Office Visit">Office Visit</option>
+                                        <option value="Client Site Visit">Client Site Visit</option>
                                     </select>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">Meeting Agenda / Notes (Optional)</label>
+                                    <textarea
+                                        rows={3}
+                                        placeholder="Add discussion points, links, or notes for this meeting..."
+                                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all placeholder:text-slate-400 text-slate-800 text-sm resize-none"
+                                        value={newMeeting.agenda}
+                                        onChange={(e) => setNewMeeting({ ...newMeeting, agenda: e.target.value })}
+                                    ></textarea>
                                 </div>
                             </div>
 
-                            <div className="pt-4 flex gap-3">
+                            {saveError && (
+                                <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700 font-medium">
+                                    ⚠️ {saveError}
+                                </div>
+                            )}
+                            <div className="pt-2 flex gap-3">
                                 <button
                                     type="button"
                                     onClick={() => setIsModalOpen(false)}
